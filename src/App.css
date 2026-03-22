@@ -1,0 +1,163 @@
+:root {
+  font-family: "Segoe UI", "Hiragino Kaku Gothic ProN", Meiryo, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  font-weight: 400;
+
+  color: #0a2a4d;
+  background-color: #f4f9ff;
+
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  -webkit-text-size-adjust: 100%;
+}
+
+.app-shell {
+  min-height: 100vh;
+  margin: 0;
+  padding: 2.5rem 1.25rem 3rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+  background:
+    repeating-linear-gradient(
+      -35deg,
+      rgba(53, 133, 220, 0.12) 0,
+      rgba(53, 133, 220, 0.12) 14px,
+      rgba(255, 255, 255, 0.95) 14px,
+      rgba(255, 255, 255, 0.95) 30px
+    ),
+    linear-gradient(180deg, #edf6ff 0%, #f7fbff 100%);
+}
+
+.hero,
+.panel {
+  width: min(980px, 100%);
+  margin: 0 auto;
+  border-radius: 18px;
+  border: 1px solid #b6d8fb;
+  background: rgba(255, 255, 255, 0.86);
+  backdrop-filter: blur(4px);
+  box-shadow: 0 18px 30px rgba(27, 82, 138, 0.11);
+}
+
+.hero {
+  padding: 1.6rem 1.6rem 1.3rem;
+}
+
+.hero-tag {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #1d6fbd;
+}
+
+h1 {
+  margin: 0.4rem 0 0;
+  font-size: clamp(1.7rem, 2.6vw, 2.4rem);
+  line-height: 1.2;
+}
+
+.hero-lead {
+  margin: 0.7rem 0 0;
+  color: #2c5f94;
+}
+
+.panel-grid {
+  width: min(980px, 100%);
+  margin: 0 auto;
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.panel {
+  padding: 1.2rem;
+}
+
+.panel h2 {
+  margin: 0;
+  font-size: 1.05rem;
+  color: #0f3c69;
+}
+
+.panel-primary {
+  border-color: #6fb2f3;
+  background:
+    linear-gradient(180deg, rgba(228, 242, 255, 0.98) 0%, rgba(255, 255, 255, 0.92) 100%);
+}
+
+.project-name {
+  margin: 0.65rem 0 0;
+  font-weight: 700;
+  color: #0d467a;
+}
+
+.time {
+  margin: 0.25rem 0 0.95rem;
+  font-size: clamp(1.6rem, 3vw, 2.1rem);
+  letter-spacing: 0.05em;
+  color: #1f78c8;
+}
+
+.btn-main {
+  width: 100%;
+  border: none;
+  border-radius: 12px;
+  padding: 0.68rem 0.8rem;
+  background: linear-gradient(120deg, #1270be 0%, #39a0ff 100%);
+  color: #ffffff;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.btn-main:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 16px rgba(18, 112, 190, 0.32);
+}
+
+.metric-list {
+  margin: 0.8rem 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.7rem;
+}
+
+.metric-list li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid #cfe6fb;
+}
+
+.metric-list strong {
+  color: #0d4f8a;
+  font-size: 0.93rem;
+}
+
+.panel-wide {
+  grid-column: span 2;
+}
+
+.panel-wide p {
+  margin: 0.75rem 0 0;
+  color: #1f4f80;
+}
+
+@media (max-width: 860px) {
+  .panel-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .panel-wide {
+    grid-column: span 1;
+  }
+}
