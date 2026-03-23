@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "tauri-app",
+  "productName": "Secretariat",
   "version": "0.1.0",
-  "identifier": "com.waiam.tauri-app",
+  "identifier": "com.waiam.secretariat",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,7 +12,8 @@
   "app": {
     "windows": [
       {
-        "title": "tauri-app",
+        "title": "Secretariat",
+        "decorations": false,
         "width": 800,
         "height": 600
       }
