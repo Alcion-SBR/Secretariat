@@ -96,6 +96,23 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
         [],
     )?;
 
+    // CalendarEvents テーブル
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS calendar_events (
+            id TEXT PRIMARY KEY,
+            task_id TEXT,
+            title TEXT NOT NULL,
+            date INTEGER NOT NULL,
+            start_minute INTEGER NOT NULL,
+            end_minute INTEGER NOT NULL,
+            note TEXT,
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY(task_id) REFERENCES tasks(id)
+        )",
+        [],
+    )?;
+
     // インデックス作成（クエリ性能向上）
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_folders_project_id ON folders(project_id)",
@@ -129,6 +146,16 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
 
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_timer_sessions_date ON timer_sessions(date)",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_calendar_events_date ON calendar_events(date)",
+        [],
+    )?;
+
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_calendar_events_task_id ON calendar_events(task_id)",
         [],
     )?;
 

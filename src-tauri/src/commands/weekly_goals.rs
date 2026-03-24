@@ -2,6 +2,7 @@ use crate::db::{
     create_weekly_goal as create_weekly_goal_query,
     delete_weekly_goal as delete_weekly_goal_query,
     get_weekly_goal as get_weekly_goal_query,
+    list_weekly_goals_by_week as list_weekly_goals_by_week_query,
     list_weekly_goals_by_project as list_weekly_goals_by_project_query,
     list_weekly_goals_by_task as list_weekly_goals_by_task_query,
     update_weekly_goal as update_weekly_goal_query, Database, WeeklyGoal,
@@ -90,6 +91,29 @@ pub fn list_weekly_goals_by_task(
 ) -> WeeklyGoalsResponse {
     match Database::open(&app_handle) {
         Ok(conn) => match list_weekly_goals_by_task_query(&conn, &task_id, week_start) {
+            Ok(goals) => WeeklyGoalsResponse {
+                success: true,
+                message: None,
+                data: Some(goals),
+            },
+            Err(e) => WeeklyGoalsResponse {
+                success: false,
+                message: Some(format!("Failed to list weekly goals: {}", e)),
+                data: None,
+            },
+        },
+        Err(e) => WeeklyGoalsResponse {
+            success: false,
+            message: Some(format!("Database connection error: {}", e)),
+            data: None,
+        },
+    }
+}
+
+#[tauri::command]
+pub fn list_weekly_goals_by_week(app_handle: tauri::AppHandle, week_start: i32) -> WeeklyGoalsResponse {
+    match Database::open(&app_handle) {
+        Ok(conn) => match list_weekly_goals_by_week_query(&conn, week_start) {
             Ok(goals) => WeeklyGoalsResponse {
                 success: true,
                 message: None,

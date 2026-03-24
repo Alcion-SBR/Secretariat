@@ -39,12 +39,14 @@ pub fn run() {
             delete_folder,
             // Tasks
             list_tasks_by_folder,
+            list_tasks_by_project,
             create_task,
             get_task,
             update_task,
             delete_task,
             // Weekly Goals
             create_weekly_goal,
+            list_weekly_goals_by_week,
             list_weekly_goals_by_project,
             list_weekly_goals_by_task,
             update_weekly_goal,
@@ -55,6 +57,11 @@ pub fn run() {
             list_timer_sessions_by_date,
             update_timer_session,
             delete_timer_session,
+            // Calendar Events
+            list_calendar_events_in_range,
+            create_calendar_event,
+            update_calendar_event,
+            delete_calendar_event,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

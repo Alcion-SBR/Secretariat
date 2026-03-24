@@ -534,8 +534,193 @@ h1 {
   gap: 0.5rem;
 }
 
+.view-tabs {
+  margin-top: 0.9rem;
+  display: flex;
+  gap: 0.55rem;
+}
+
+.view-tabs button {
+  border: 1px solid #b9d9f7;
+  border-radius: 999px;
+  background: #f3f9ff;
+  color: #185181;
+  padding: 0.38rem 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.view-tabs button.is-active {
+  background: #2f80cc;
+  color: #ffffff;
+  border-color: #2f80cc;
+}
+
+.calendar-wrap,
+.weekly-wrap {
+  width: min(1200px, 100%);
+  margin: 0 auto;
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: minmax(0, 1.2fr) minmax(300px, 0.8fr);
+}
+
+.calendar-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.8rem;
+}
+
+.calendar-month-nav {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.calendar-month-nav button,
+.weekly-goal-list button {
+  border: 1px solid #bfdcf8;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #16507e;
+  padding: 0.35rem 0.6rem;
+  cursor: pointer;
+}
+
+.calendar-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.4rem;
+}
+
+.calendar-weekday {
+  text-align: center;
+  font-weight: 700;
+  color: #205e93;
+  font-size: 0.85rem;
+}
+
+.calendar-cell {
+  min-height: 108px;
+  border: 1px solid #d3e7fb;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0.35rem;
+}
+
+.calendar-cell.is-outside {
+  opacity: 0.55;
+}
+
+.calendar-day {
+  font-weight: 700;
+  color: #124773;
+  margin-bottom: 0.3rem;
+}
+
+.calendar-events-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.2rem;
+  font-size: 0.75rem;
+  color: #255785;
+}
+
+.calendar-events-list li {
+  border-radius: 6px;
+  background: #edf6ff;
+  padding: 0.15rem 0.3rem;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.time-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+.weekly-grid {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+
+.weekly-day-card {
+  border: 1px solid #d2e7fb;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0.55rem;
+  min-height: 96px;
+}
+
+.weekly-day-title {
+  margin: 0;
+  font-weight: 700;
+  color: #124773;
+}
+
+.weekly-day-note {
+  margin: 0.45rem 0 0;
+  color: #3c6791;
+  font-size: 0.82rem;
+}
+
+.weekly-goal-list {
+  list-style: none;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.45rem;
+}
+
+.weekly-goal-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.7rem;
+  align-items: center;
+  border: 1px solid #d5e9fb;
+  border-radius: 10px;
+  background: #ffffff;
+  padding: 0.5rem 0.6rem;
+}
+
+.weekly-goal-list p {
+  margin: 0.2rem 0 0;
+  color: #35658f;
+  font-size: 0.86rem;
+}
+
 @media (max-width: 1100px) {
   .workbench-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .calendar-wrap,
+  .weekly-wrap {
+    grid-template-columns: 1fr;
+  }
+
+  .weekly-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 760px) {
+  .calendar-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .calendar-weekday {
+    display: none;
+  }
+
+  .weekly-grid {
     grid-template-columns: 1fr;
   }
 }

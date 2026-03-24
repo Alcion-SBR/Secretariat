@@ -242,6 +242,34 @@ pub fn list_tasks_by_folder(conn: &Connection, folder_id: &str) -> SqlResult<Vec
     Ok(tasks)
 }
 
+pub fn list_tasks_by_project(conn: &Connection, project_id: &str) -> SqlResult<Vec<Task>> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.folder_id, t.name, t.color, t.overview, t.details, t.related_links, t.created_at, t.updated_at
+         FROM tasks t
+         INNER JOIN folders f ON t.folder_id = f.id
+         WHERE f.project_id = ?1
+         ORDER BY t.created_at ASC",
+    )?;
+
+    let tasks = stmt
+        .query_map(params![project_id], |row| {
+            Ok(Task {
+                id: row.get(0)?,
+                folder_id: row.get(1)?,
+                name: row.get(2)?,
+                color: row.get(3)?,
+                overview: row.get(4)?,
+                details: row.get(5)?,
+                related_links: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
+        })?
+        .collect::<SqlResult<Vec<_>>>()?;
+
+    Ok(tasks)
+}
+
 pub fn update_task(conn: &Connection, task: &Task) -> SqlResult<()> {
     conn.execute(
         "UPDATE tasks SET name = ?1, color = ?2, overview = ?3, details = ?4, related_links = ?5, updated_at = ?6 WHERE id = ?7",
@@ -346,6 +374,30 @@ pub fn list_weekly_goals_by_task(conn: &Connection, task_id: &str, week_start: i
         })
     })?
     .collect::<SqlResult<Vec<_>>>()?;
+
+    Ok(goals)
+}
+
+pub fn list_weekly_goals_by_week(conn: &Connection, week_start: i32) -> SqlResult<Vec<WeeklyGoal>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, project_id, task_id, week_start, target_hours, actual_hours, created_at, updated_at
+         FROM weekly_goals WHERE week_start = ?1 ORDER BY created_at ASC",
+    )?;
+
+    let goals = stmt
+        .query_map(params![week_start], |row| {
+            Ok(WeeklyGoal {
+                id: row.get(0)?,
+                project_id: row.get(1)?,
+                task_id: row.get(2)?,
+                week_start: row.get(3)?,
+                target_hours: row.get(4)?,
+                actual_hours: row.get(5)?,
+                created_at: row.get(6)?,
+                updated_at: row.get(7)?,
+            })
+        })?
+        .collect::<SqlResult<Vec<_>>>()?;
 
     Ok(goals)
 }
@@ -459,5 +511,105 @@ pub fn update_timer_session(conn: &Connection, session: &TimerSession) -> SqlRes
 
 pub fn delete_timer_session(conn: &Connection, id: &str) -> SqlResult<()> {
     conn.execute("DELETE FROM timer_sessions WHERE id = ?1", params![id])?;
+    Ok(())
+}
+
+// ==================== CalendarEvents ====================
+
+pub fn create_calendar_event(conn: &Connection, event: &CalendarEvent) -> SqlResult<()> {
+    conn.execute(
+        "INSERT INTO calendar_events (id, task_id, title, date, start_minute, end_minute, note, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+        params![
+            event.id,
+            event.task_id,
+            event.title,
+            event.date,
+            event.start_minute,
+            event.end_minute,
+            event.note,
+            event.created_at,
+            event.updated_at
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn get_calendar_event(conn: &Connection, id: &str) -> SqlResult<Option<CalendarEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, task_id, title, date, start_minute, end_minute, note, created_at, updated_at FROM calendar_events WHERE id = ?1",
+    )?;
+
+    let event = stmt
+        .query_row(params![id], |row| {
+            Ok(CalendarEvent {
+                id: row.get(0)?,
+                task_id: row.get(1)?,
+                title: row.get(2)?,
+                date: row.get(3)?,
+                start_minute: row.get(4)?,
+                end_minute: row.get(5)?,
+                note: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
+        })
+        .optional()?;
+
+    Ok(event)
+}
+
+pub fn list_calendar_events_in_range(
+    conn: &Connection,
+    start_date: i32,
+    end_date: i32,
+) -> SqlResult<Vec<CalendarEvent>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, task_id, title, date, start_minute, end_minute, note, created_at, updated_at
+         FROM calendar_events
+         WHERE date >= ?1 AND date <= ?2
+         ORDER BY date ASC, start_minute ASC",
+    )?;
+
+    let events = stmt
+        .query_map(params![start_date, end_date], |row| {
+            Ok(CalendarEvent {
+                id: row.get(0)?,
+                task_id: row.get(1)?,
+                title: row.get(2)?,
+                date: row.get(3)?,
+                start_minute: row.get(4)?,
+                end_minute: row.get(5)?,
+                note: row.get(6)?,
+                created_at: row.get(7)?,
+                updated_at: row.get(8)?,
+            })
+        })?
+        .collect::<SqlResult<Vec<_>>>()?;
+
+    Ok(events)
+}
+
+pub fn update_calendar_event(conn: &Connection, event: &CalendarEvent) -> SqlResult<()> {
+    conn.execute(
+        "UPDATE calendar_events
+         SET task_id = ?1, title = ?2, date = ?3, start_minute = ?4, end_minute = ?5, note = ?6, updated_at = ?7
+         WHERE id = ?8",
+        params![
+            event.task_id,
+            event.title,
+            event.date,
+            event.start_minute,
+            event.end_minute,
+            event.note,
+            event.updated_at,
+            event.id
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn delete_calendar_event(conn: &Connection, id: &str) -> SqlResult<()> {
+    conn.execute("DELETE FROM calendar_events WHERE id = ?1", params![id])?;
     Ok(())
 }

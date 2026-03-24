@@ -1,7 +1,8 @@
 use crate::db::{
     create_task as create_task_query, delete_task as delete_task_query,
     get_task as get_task_query, list_tasks_by_folder as list_tasks_by_folder_query,
-    update_task as update_task_query, Database, Task,
+    list_tasks_by_project as list_tasks_by_project_query, update_task as update_task_query,
+    Database, Task,
 };
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +32,29 @@ pub fn list_tasks_by_folder(app_handle: tauri::AppHandle, folder_id: String) -> 
             Err(e) => TasksResponse {
                 success: false,
                 message: Some(format!("Failed to list tasks: {}", e)),
+                data: None,
+            },
+        },
+        Err(e) => TasksResponse {
+            success: false,
+            message: Some(format!("Database connection error: {}", e)),
+            data: None,
+        },
+    }
+}
+
+#[tauri::command]
+pub fn list_tasks_by_project(app_handle: tauri::AppHandle, project_id: String) -> TasksResponse {
+    match Database::open(&app_handle) {
+        Ok(conn) => match list_tasks_by_project_query(&conn, &project_id) {
+            Ok(tasks) => TasksResponse {
+                success: true,
+                message: None,
+                data: Some(tasks),
+            },
+            Err(e) => TasksResponse {
+                success: false,
+                message: Some(format!("Failed to list tasks by project: {}", e)),
                 data: None,
             },
         },

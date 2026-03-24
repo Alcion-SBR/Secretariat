@@ -142,3 +142,40 @@ impl TimerSession {
         }
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CalendarEvent {
+    pub id: String,
+    pub task_id: Option<String>,
+    pub title: String,
+    pub date: i32, // YYYYMMDD
+    pub start_minute: i32,
+    pub end_minute: i32,
+    pub note: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+impl CalendarEvent {
+    pub fn new(
+        task_id: Option<String>,
+        title: String,
+        date: i32,
+        start_minute: i32,
+        end_minute: i32,
+        note: Option<String>,
+    ) -> Self {
+        let now = chrono::Utc::now().timestamp();
+        Self {
+            id: Uuid::new_v4().to_string(),
+            task_id,
+            title,
+            date,
+            start_minute,
+            end_minute,
+            note,
+            created_at: now,
+            updated_at: now,
+        }
+    }
+}
