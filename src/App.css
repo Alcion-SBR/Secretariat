@@ -346,3 +346,196 @@ h1 {
     grid-column: span 1;
   }
 }
+
+.workbench-grid {
+  width: min(1200px, 100%);
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: 280px 320px minmax(0, 1fr);
+  gap: 1rem;
+}
+
+.explorer-panel,
+.task-panel {
+  min-height: 560px;
+}
+
+.inline-form {
+  display: grid;
+  gap: 0.5rem;
+  margin-top: 0.8rem;
+  margin-bottom: 0.8rem;
+}
+
+.inline-form input,
+.inline-form select,
+.inline-form button,
+.task-form-grid input,
+.task-form-grid textarea,
+.task-form-grid button,
+.timer-card input {
+  border: 1px solid #b5d4f2;
+  border-radius: 10px;
+  background: #fff;
+  color: #174977;
+  padding: 0.55rem 0.65rem;
+  font: inherit;
+}
+
+.inline-form button,
+.task-form-grid button,
+.timer-actions button {
+  cursor: pointer;
+}
+
+.tree-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.row-btn {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+  text-align: left;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid #d3e7fb;
+  border-radius: 10px;
+  background: #ffffff;
+  color: #10436f;
+  cursor: pointer;
+}
+
+.row-btn.is-active {
+  border-color: #5ea8ea;
+  background: #eaf5ff;
+}
+
+.color-dot {
+  width: 0.75rem;
+  height: 0.75rem;
+  border-radius: 999px;
+  display: inline-block;
+  margin-right: 0.45rem;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+}
+
+.task-form-grid {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.task-form-grid textarea {
+  min-height: 76px;
+  resize: vertical;
+}
+
+.color-input {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.8rem;
+  color: #174977;
+}
+
+.color-input input {
+  width: 52px;
+  height: 38px;
+  padding: 0.2rem;
+}
+
+.links-block p {
+  margin: 0.25rem 0;
+  font-weight: 600;
+  color: #0f3c69;
+}
+
+.link-row {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 0.4rem;
+  margin-bottom: 0.35rem;
+}
+
+.task-list {
+  margin-top: 0.9rem;
+}
+
+.task-detail {
+  margin-top: 1rem;
+  padding: 0.85rem;
+  border: 1px solid #cde4fa;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.92);
+}
+
+.task-detail h3 {
+  margin: 0 0 0.4rem;
+}
+
+.task-detail p {
+  margin: 0.35rem 0;
+}
+
+.link-list {
+  margin: 0.35rem 0 0;
+  padding-left: 1rem;
+}
+
+.link-list a {
+  color: #0e63ad;
+}
+
+.error-banner {
+  width: min(1200px, 100%);
+  margin: 0 auto;
+  border: 1px solid #f1b9b9;
+  border-radius: 10px;
+  padding: 0.6rem 0.8rem;
+  background: #fff0f0;
+  color: #8a2f2f;
+}
+
+.empty-note {
+  color: #3c6a97;
+  margin: 0.65rem 0 0;
+}
+
+.timer-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.3);
+  display: grid;
+  place-items: center;
+  z-index: 95;
+}
+
+.timer-card {
+  width: min(420px, 92vw);
+  border-radius: 14px;
+  border: 1px solid #b3d3f2;
+  background: #fff;
+  padding: 1rem;
+}
+
+.timer-card h3 {
+  margin-top: 0;
+}
+
+.timer-actions {
+  margin-top: 0.7rem;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+}
+
+@media (max-width: 1100px) {
+  .workbench-grid {
+    grid-template-columns: 1fr;
+  }
+}
