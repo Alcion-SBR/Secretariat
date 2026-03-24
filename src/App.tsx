@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./App.css";
@@ -49,6 +49,16 @@ type CalendarEvent = {
   note?: string | null;
 };
 
+type TimerSession = {
+  id: string;
+  task_id: string;
+  start_time: number;
+  end_time?: number | null;
+  duration?: number | null;
+  date: number;
+  created_at: number;
+};
+
 type ApiResponse<T> = {
   success: boolean;
   message?: string;
@@ -78,6 +88,13 @@ const labelToMinute = (label: string) => {
   return h * 60 + m;
 };
 
+const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+const secToLabel = (seconds: number) => {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${pad2(m)}:${pad2(s)}`;
+};
+
 const getMonday = (base: Date) => {
   const d = new Date(base);
   const day = d.getDay();
@@ -99,6 +116,8 @@ function App() {
   const [selectedProjectId, setSelectedProjectId] = useState<string>("");
   const [selectedFolderId, setSelectedFolderId] = useState<string>("");
   const [selectedTaskId, setSelectedTaskId] = useState<string>("");
+  const [expandedProjects, setExpandedProjects] = useState<Record<string, boolean>>({});
+  const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
 
   const [loading, setLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>("");
@@ -108,6 +127,8 @@ function App() {
 
   const [newFolderName, setNewFolderName] = useState("");
   const [newFolderParentId, setNewFolderParentId] = useState("");
+  const [projectCreateKind, setProjectCreateKind] = useState<"folder" | "task">("folder");
+  const [projectTaskFolderId, setProjectTaskFolderId] = useState("");
 
   const [newTaskName, setNewTaskName] = useState("");
   const [newTaskColor, setNewTaskColor] = useState("#2f80cc");
@@ -117,6 +138,18 @@ function App() {
 
   const [timerTargetTask, setTimerTargetTask] = useState<Task | null>(null);
   const [timerMinutes, setTimerMinutes] = useState(25);
+  const [timerIsRunning, setTimerIsRunning] = useState(false);
+  const [timerInitialSeconds, setTimerInitialSeconds] = useState(25 * 60);
+  const [timerRemainingSeconds, setTimerRemainingSeconds] = useState(25 * 60);
+  const [timerDeadlineMs, setTimerDeadlineMs] = useState<number | null>(null);
+  const [activeTimerSessionId, setActiveTimerSessionId] = useState<string>("");
+  const timerCompletingRef = useRef(false);
+
+  const [isEditingProject, setIsEditingProject] = useState(false);
+  const [editProjectName, setEditProjectName] = useState("");
+  const [editProjectColor, setEditProjectColor] = useState("#2f80cc");
+  const [editProjectDescription, setEditProjectDescription] = useState("");
+  const [editProjectDetails, setEditProjectDetails] = useState("");
 
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
@@ -126,6 +159,9 @@ function App() {
   const [newEventEnd, setNewEventEnd] = useState("10:00");
   const [newEventTaskId, setNewEventTaskId] = useState("");
   const [newEventNote, setNewEventNote] = useState("");
+  const [showCalendarCreateForm, setShowCalendarCreateForm] = useState(false);
+  const [calendarPopoverPosition, setCalendarPopoverPosition] = useState<{ left: number; top: number } | null>(null);
+  const [calendarPopoverDrag, setCalendarPopoverDrag] = useState<{ offsetX: number; offsetY: number } | null>(null);
 
   const [weeklyBaseDate, setWeeklyBaseDate] = useState(getMonday(new Date()));
   const [weeklyGoals, setWeeklyGoals] = useState<WeeklyGoal[]>([]);
@@ -136,6 +172,8 @@ function App() {
 
   const closeMenu = () => setMenuOpen(false);
   const appWindow = getCurrentWindow();
+  const calendarPanelRef = useRef<HTMLElement | null>(null);
+  const calendarPopoverRef = useRef<HTMLDivElement | null>(null);
 
   const selectedProject = useMemo(
     () => projects.find((project) => project.id === selectedProjectId) ?? null,
@@ -148,16 +186,20 @@ function App() {
   );
 
   const selectedTask = useMemo(
-    () => tasks.find((task) => task.id === selectedTaskId) ?? null,
-    [tasks, selectedTaskId],
+    () => projectTasks.find((task) => task.id === selectedTaskId) ?? tasks.find((task) => task.id === selectedTaskId) ?? null,
+    [projectTasks, tasks, selectedTaskId],
   );
 
   const selectedFolderTasks = useMemo(
-    () => tasks.filter((task) => task.folder_id === selectedFolderId),
-    [tasks, selectedFolderId],
+    () => projectTasks.filter((task) => task.folder_id === selectedFolderId),
+    [projectTasks, selectedFolderId],
   );
 
   const hasNoTaskInFolder = selectedFolderId && selectedFolderTasks.length === 0;
+  const rootFolders = useMemo(
+    () => folders.filter((folder) => !folder.parent_folder_id),
+    [folders],
+  );
 
   const monthLabel = `${currentMonth.getFullYear()}年 ${currentMonth.getMonth() + 1}月`;
 
@@ -325,6 +367,20 @@ function App() {
   }, [selectedFolderId]);
 
   useEffect(() => {
+    setIsEditingProject(false);
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    if (!selectedProjectId) {
+      setProjectTaskFolderId("");
+      return;
+    }
+    if (!folders.some((folder) => folder.id === projectTaskFolderId)) {
+      setProjectTaskFolderId(folders[0]?.id ?? "");
+    }
+  }, [folders, projectTaskFolderId, selectedProjectId]);
+
+  useEffect(() => {
     if (activeView === "calendar") {
       void loadCalendarEventsForMonth(currentMonth);
     }
@@ -335,6 +391,90 @@ function App() {
       void loadWeeklyGoals(weekStartYmd);
     }
   }, [activeView, weekStartYmd]);
+
+  useEffect(() => {
+    const seconds = Math.max(60, (Number(timerMinutes) || 25) * 60);
+    if (!timerIsRunning && !activeTimerSessionId) {
+      setTimerInitialSeconds(seconds);
+      setTimerRemainingSeconds(seconds);
+    }
+  }, [timerMinutes, timerIsRunning, activeTimerSessionId]);
+
+  useEffect(() => {
+    if (!timerIsRunning || !timerDeadlineMs) {
+      return;
+    }
+
+    const tick = () => {
+      const next = Math.max(0, Math.ceil((timerDeadlineMs - Date.now()) / 1000));
+      setTimerRemainingSeconds(next);
+      if (next === 0 && !timerCompletingRef.current) {
+        timerCompletingRef.current = true;
+        setTimerIsRunning(false);
+        setTimerDeadlineMs(null);
+        void handleFinishTimerSession(timerInitialSeconds, true);
+      }
+    };
+
+    tick();
+    const intervalId = window.setInterval(tick, 250);
+    return () => window.clearInterval(intervalId);
+  }, [timerIsRunning, timerDeadlineMs, timerInitialSeconds]);
+
+  useEffect(() => {
+    if (!showCalendarCreateForm) {
+      setCalendarPopoverPosition(null);
+      setCalendarPopoverDrag(null);
+      return;
+    }
+
+    if (!calendarPanelRef.current || !calendarPopoverRef.current || calendarPopoverPosition) {
+      return;
+    }
+
+    const panelRect = calendarPanelRef.current.getBoundingClientRect();
+    const popoverRect = calendarPopoverRef.current.getBoundingClientRect();
+    const defaultLeft = Math.max(16, panelRect.width - popoverRect.width - 16);
+
+    setCalendarPopoverPosition({ left: defaultLeft, top: 74 });
+  }, [showCalendarCreateForm, calendarPopoverPosition]);
+
+  useEffect(() => {
+    if (!calendarPopoverDrag) {
+      return;
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (!calendarPanelRef.current || !calendarPopoverRef.current) {
+        return;
+      }
+
+      const panelRect = calendarPanelRef.current.getBoundingClientRect();
+      const popoverRect = calendarPopoverRef.current.getBoundingClientRect();
+      const viewportPadding = 12;
+      const minViewportTop = 44;
+      const minLeft = viewportPadding - panelRect.left;
+      const minTop = minViewportTop - panelRect.top;
+      const maxLeft = window.innerWidth - panelRect.left - popoverRect.width - viewportPadding;
+      const maxTop = window.innerHeight - panelRect.top - popoverRect.height - viewportPadding;
+      const nextLeft = clamp(event.clientX - panelRect.left - calendarPopoverDrag.offsetX, minLeft, maxLeft);
+      const nextTop = clamp(event.clientY - panelRect.top - calendarPopoverDrag.offsetY, minTop, maxTop);
+
+      setCalendarPopoverPosition({ left: nextLeft, top: nextTop });
+    };
+
+    const handlePointerUp = () => {
+      setCalendarPopoverDrag(null);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+  }, [calendarPopoverDrag]);
 
   const handleCreateProject = async () => {
     if (!newProjectName.trim()) {
@@ -380,8 +520,9 @@ function App() {
     }
   };
 
-  const handleCreateTask = async () => {
-    if (!selectedFolderId || !newTaskName.trim()) {
+  const handleCreateTask = async (explicitFolderId?: string) => {
+    const folderId = explicitFolderId || selectedFolderId;
+    if (!folderId || !newTaskName.trim()) {
       return;
     }
 
@@ -403,7 +544,7 @@ function App() {
 
     try {
       const response = await invoke<ApiResponse<Task>>("create_task", {
-        folderId: selectedFolderId,
+        folderId,
         name: newTaskName.trim(),
         color: newTaskColor,
         overview: overview || null,
@@ -419,7 +560,9 @@ function App() {
       setNewTaskOverview("");
       setNewTaskDetails("");
       setNewTaskLinks(emptyLinks);
-      await loadTasksByFolder(selectedFolderId);
+      if (selectedFolderId && selectedFolderId === folderId) {
+        await loadTasksByFolder(selectedFolderId);
+      }
       await loadProjectTasks(selectedProjectId);
     } catch {
       setErrorMessage("タスク作成に失敗しました。");
@@ -432,6 +575,73 @@ function App() {
       next[index] = { ...next[index], [key]: value };
       return next;
     });
+  };
+
+  const getChildFolders = (parentFolderId: string | null) =>
+    folders.filter((folder) => (parentFolderId ? folder.parent_folder_id === parentFolderId : !folder.parent_folder_id));
+
+  const getTasksForFolder = (folderId: string) => projectTasks.filter((task) => task.folder_id === folderId);
+
+  const toggleProjectExpanded = (projectId: string) => {
+    setExpandedProjects((prev) => ({ ...prev, [projectId]: !prev[projectId] }));
+  };
+
+  const toggleFolderExpanded = (folderId: string) => {
+    setExpandedFolders((prev) => ({ ...prev, [folderId]: !prev[folderId] }));
+  };
+
+  const selectProjectNode = (projectId: string) => {
+    setSelectedProjectId(projectId);
+    setSelectedFolderId("");
+    setSelectedTaskId("");
+    setExpandedProjects((prev) => ({ ...prev, [projectId]: true }));
+  };
+
+  const selectFolderNode = (folderId: string, projectId: string) => {
+    setSelectedProjectId(projectId);
+    setSelectedFolderId(folderId);
+    setSelectedTaskId("");
+    setExpandedProjects((prev) => ({ ...prev, [projectId]: true }));
+    setExpandedFolders((prev) => ({ ...prev, [folderId]: true }));
+  };
+
+  const selectTaskNode = (taskId: string, folderId: string, projectId: string) => {
+    setSelectedProjectId(projectId);
+    setSelectedFolderId(folderId);
+    setSelectedTaskId(taskId);
+    setExpandedProjects((prev) => ({ ...prev, [projectId]: true }));
+    setExpandedFolders((prev) => ({ ...prev, [folderId]: true }));
+  };
+
+  const startEditingProject = (project: Project) => {
+    setEditProjectName(project.name);
+    setEditProjectColor(project.color);
+    setEditProjectDescription(project.description ?? "");
+    setEditProjectDetails(project.details ?? "");
+    setIsEditingProject(true);
+  };
+
+  const handleUpdateProject = async () => {
+    if (!selectedProjectId || !editProjectName.trim()) {
+      return;
+    }
+    try {
+      const response = await invoke<ApiResponse<Project>>("update_project", {
+        id: selectedProjectId,
+        name: editProjectName.trim(),
+        color: editProjectColor,
+        description: editProjectDescription.trim() || null,
+        details: editProjectDetails.trim() || null,
+      });
+      if (!response.success) {
+        setErrorMessage(response.message ?? "プロジェクトの更新に失敗しました。");
+        return;
+      }
+      setIsEditingProject(false);
+      await loadProjects();
+    } catch {
+      setErrorMessage("プロジェクトの更新に失敗しました。");
+    }
   };
 
   const handleCreateCalendarEvent = async () => {
@@ -463,8 +673,12 @@ function App() {
         return;
       }
       setNewEventTitle("");
+      setNewEventDate("");
+      setNewEventStart("09:00");
+      setNewEventEnd("10:00");
       setNewEventNote("");
       setNewEventTaskId("");
+      setShowCalendarCreateForm(false);
       await loadCalendarEventsForMonth(currentMonth);
     } catch {
       setErrorMessage("イベント作成に失敗しました。");
@@ -502,11 +716,121 @@ function App() {
     }
   };
 
+  const getCurrentRemainingSeconds = () => {
+    if (!timerIsRunning || !timerDeadlineMs) {
+      return timerRemainingSeconds;
+    }
+    return Math.max(0, Math.ceil((timerDeadlineMs - Date.now()) / 1000));
+  };
+
+  const closeTimerModal = () => {
+    setTimerIsRunning(false);
+    setTimerDeadlineMs(null);
+    setActiveTimerSessionId("");
+    timerCompletingRef.current = false;
+    setTimerTargetTask(null);
+  };
+
+  const handleStartTimer = async () => {
+    if (!timerTargetTask) {
+      return;
+    }
+
+    const seconds = Math.max(60, (Number(timerMinutes) || 25) * 60);
+    const today = dateToYmdNumber(new Date());
+
+    try {
+      const response = await invoke<ApiResponse<TimerSession>>("create_timer_session", {
+        taskId: timerTargetTask.id,
+        date: today,
+      });
+      if (!response.success || !response.data) {
+        setErrorMessage(response.message ?? "タイマー開始に失敗しました。");
+        return;
+      }
+
+      setErrorMessage("");
+      timerCompletingRef.current = false;
+      setActiveTimerSessionId(response.data.id);
+      setTimerInitialSeconds(seconds);
+      setTimerRemainingSeconds(seconds);
+      setTimerDeadlineMs(Date.now() + seconds * 1000);
+      setTimerIsRunning(true);
+    } catch {
+      setErrorMessage("タイマー開始に失敗しました。");
+    }
+  };
+
+  const handlePauseTimer = () => {
+    if (!timerIsRunning) {
+      return;
+    }
+    setTimerRemainingSeconds(getCurrentRemainingSeconds());
+    setTimerIsRunning(false);
+    setTimerDeadlineMs(null);
+  };
+
+  const handleResumeTimer = () => {
+    if (timerIsRunning || !activeTimerSessionId) {
+      return;
+    }
+    if (timerRemainingSeconds <= 0) {
+      return;
+    }
+    setTimerDeadlineMs(Date.now() + timerRemainingSeconds * 1000);
+    setTimerIsRunning(true);
+  };
+
+  const handleFinishTimerSession = async (durationSeconds: number, closeOnDone: boolean) => {
+    if (!activeTimerSessionId) {
+      if (closeOnDone) {
+        closeTimerModal();
+      }
+      return;
+    }
+
+    try {
+      const response = await invoke<ApiResponse<TimerSession>>("update_timer_session", {
+        id: activeTimerSessionId,
+        endTime: Math.floor(Date.now() / 1000),
+        duration: Math.max(1, Math.floor(durationSeconds)),
+      });
+      if (!response.success) {
+        setErrorMessage(response.message ?? "タイマー保存に失敗しました。");
+      }
+    } catch {
+      setErrorMessage("タイマー保存に失敗しました。");
+    } finally {
+      setActiveTimerSessionId("");
+      timerCompletingRef.current = false;
+      if (activeView === "weekly") {
+        await loadWeeklyGoals(weekStartYmd);
+      }
+      if (closeOnDone) {
+        closeTimerModal();
+      }
+    }
+  };
+
+  const handleStopTimer = async () => {
+    if (!activeTimerSessionId) {
+      closeTimerModal();
+      return;
+    }
+
+    const currentRemaining = getCurrentRemainingSeconds();
+    setTimerRemainingSeconds(currentRemaining);
+    setTimerIsRunning(false);
+    setTimerDeadlineMs(null);
+    const elapsed = timerInitialSeconds - currentRemaining;
+    await handleFinishTimerSession(elapsed, true);
+  };
+
   const handleMinimize = async () => {
     try {
       await appWindow.minimize();
-    } catch {
-      // Browser preview does not provide native window controls.
+    } catch (error) {
+      console.error("minimize failed", error);
     }
   };
 
@@ -518,17 +842,50 @@ function App() {
       } else {
         await appWindow.maximize();
       }
-    } catch {
-      // Browser preview does not provide native window controls.
+    } catch (error) {
+      console.error("maximize toggle failed", error);
     }
   };
 
   const handleClose = async () => {
     try {
       await appWindow.close();
-    } catch {
-      // Browser preview does not provide native window controls.
+    } catch (error) {
+      console.error("close failed", error);
     }
+  };
+
+  const handleStartDragging = async () => {
+    try {
+      await appWindow.startDragging();
+    } catch (error) {
+      console.error("start dragging failed", error);
+    }
+  };
+
+  const handleTitlebarMouseDown = (event: React.MouseEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement;
+    if (target.closest(".titlebar-controls")) {
+      return;
+    }
+    void handleStartDragging();
+  };
+
+  const handleCalendarPopoverDragStart = (event: React.PointerEvent<HTMLDivElement>) => {
+    const target = event.target as HTMLElement;
+    if (target.closest("button")) {
+      return;
+    }
+    if (!calendarPopoverRef.current) {
+      return;
+    }
+
+    const popoverRect = calendarPopoverRef.current.getBoundingClientRect();
+    setCalendarPopoverDrag({
+      offsetX: event.clientX - popoverRect.left,
+      offsetY: event.clientY - popoverRect.top,
+    });
+    event.preventDefault();
   };
 
   const monthMatrix = useMemo(() => {
@@ -546,11 +903,19 @@ function App() {
     );
   }, [currentMonth]);
 
+  const hasDetailSelected = !!(selectedProject || selectedFolder || selectedTask);
+
+  const clearDetailSelection = () => {
+    setSelectedProjectId("");
+    setSelectedFolderId("");
+    setSelectedTaskId("");
+  };
+
   const renderProjectsView = () => (
-    <section className="workbench-grid">
-      <article className="panel explorer-panel">
-        <h2>プロジェクト</h2>
-        <div className="inline-form">
+    <section className={hasDetailSelected ? "project-explorer-layout has-detail" : "project-explorer-layout"}>
+      <article className="panel explorer-tree-panel">
+        <h2>プロジェクト構造</h2>
+        <div className="inline-form compact-form">
           <input
             placeholder="新規プロジェクト名"
             value={newProjectName}
@@ -561,183 +926,371 @@ function App() {
             追加
           </button>
         </div>
-        <ul className="tree-list">
-          {projects.map((project) => (
-            <li key={project.id}>
-              <button
-                type="button"
-                className={project.id === selectedProjectId ? "row-btn is-active" : "row-btn"}
-                onClick={() => setSelectedProjectId(project.id)}
-              >
-                <span>
-                  <span className="color-dot" style={{ backgroundColor: project.color }} />
-                  {project.name}
-                </span>
-              </button>
-            </li>
-          ))}
+        <ul className="explorer-tree">
+          {projects.map((project) => {
+            const projectExpanded = expandedProjects[project.id] ?? project.id === selectedProjectId;
+            const projectFolderRoots = project.id === selectedProjectId ? rootFolders : [];
+
+            const renderFolderNode = (folder: Folder, depth: number): React.ReactNode => {
+              const childFolders = getChildFolders(folder.id);
+              const folderTasks = getTasksForFolder(folder.id);
+              const folderExpanded = expandedFolders[folder.id] ?? folder.id === selectedFolderId;
+
+              return (
+                <li key={folder.id}>
+                  <div className="tree-row" style={{ paddingLeft: `${depth * 1.05}rem` }}>
+                    <button
+                      type="button"
+                      className="tree-toggle"
+                      onClick={() => toggleFolderExpanded(folder.id)}
+                      aria-label={folderExpanded ? "フォルダを閉じる" : "フォルダを開く"}
+                    >
+                      {childFolders.length > 0 || folderTasks.length > 0 ? (folderExpanded ? "▾" : "▸") : "•"}
+                    </button>
+                    <button
+                      type="button"
+                      className={folder.id === selectedFolderId && !selectedTaskId ? "tree-node is-active" : "tree-node"}
+                      onClick={() => selectFolderNode(folder.id, folder.project_id)}
+                    >
+                      <span>[F] {folder.name}</span>
+                      <small>{folderTasks.length}件</small>
+                    </button>
+                  </div>
+                  {folderExpanded && (childFolders.length > 0 || folderTasks.length > 0) && (
+                    <ul className="explorer-tree nested-tree">
+                      {childFolders.map((childFolder) => renderFolderNode(childFolder, depth + 1))}
+                      {folderTasks.map((task) => (
+                        <li key={task.id}>
+                          <div className="tree-row" style={{ paddingLeft: `${(depth + 1) * 1.05}rem` }}>
+                            <span className="tree-toggle tree-dot">•</span>
+                            <button
+                              type="button"
+                              className={task.id === selectedTaskId ? "tree-node is-active" : "tree-node"}
+                              onClick={() => selectTaskNode(task.id, folder.id, folder.project_id)}
+                            >
+                              <span>
+                                <span className="color-dot" style={{ backgroundColor: task.color }} />
+                                {task.name}
+                              </span>
+                            </button>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </li>
+              );
+            };
+
+            return (
+              <li key={project.id}>
+                <div className="tree-row">
+                  <button
+                    type="button"
+                    className="tree-toggle"
+                    onClick={() => {
+                      toggleProjectExpanded(project.id);
+                      setSelectedProjectId(project.id);
+                    }}
+                    aria-label={projectExpanded ? "プロジェクトを閉じる" : "プロジェクトを開く"}
+                  >
+                    {projectExpanded ? "▾" : "▸"}
+                  </button>
+                  <button
+                    type="button"
+                    className={project.id === selectedProjectId && !selectedFolderId && !selectedTaskId ? "tree-node is-active" : "tree-node"}
+                    onClick={() => selectProjectNode(project.id)}
+                  >
+                    <span>
+                      <span className="color-dot" style={{ backgroundColor: project.color }} />
+                      {project.name}
+                    </span>
+                  </button>
+                </div>
+                {projectExpanded && project.id === selectedProjectId && (
+                  <ul className="explorer-tree nested-tree">
+                    {projectFolderRoots.map((folder) => renderFolderNode(folder, 1))}
+                    {projectFolderRoots.length === 0 && <li className="empty-note tree-empty">フォルダがありません。</li>}
+                  </ul>
+                )}
+              </li>
+            );
+          })}
         </ul>
         {!loading && projects.length === 0 && <p className="empty-note">まだプロジェクトがありません。</p>}
       </article>
 
-      <article className="panel explorer-panel">
-        <h2>フォルダ {selectedProject ? `(${selectedProject.name})` : ""}</h2>
-        <div className="inline-form">
-          <input
-            placeholder="新規フォルダ名"
-            value={newFolderName}
-            onChange={(event) => setNewFolderName(event.target.value)}
-            disabled={!selectedProjectId}
-          />
-          <select
-            value={newFolderParentId}
-            onChange={(event) => setNewFolderParentId(event.target.value)}
-            disabled={!selectedProjectId}
-          >
-            <option value="">ルート</option>
-            {folders.map((folder) => (
-              <option key={folder.id} value={folder.id}>
-                {folder.name}
-              </option>
-            ))}
-          </select>
-          <button type="button" onClick={handleCreateFolder} disabled={!selectedProjectId}>
-            追加
-          </button>
+      {hasDetailSelected && (
+      <article className="panel explorer-detail-panel">
+        <div className="detail-panel-head">
+          <h2>
+            {selectedTask && `タスク詳細 (${selectedTask.name})`}
+            {!selectedTask && selectedFolder && `フォルダ詳細 (${selectedFolder.name})`}
+            {!selectedTask && !selectedFolder && selectedProject && `プロジェクト詳細 (${selectedProject.name})`}
+          </h2>
+          <button type="button" className="detail-panel-close" onClick={clearDetailSelection} aria-label="閉じる">×</button>
         </div>
-        <ul className="tree-list">
-          {folders.map((folder) => (
-            <li key={folder.id}>
-              <button
-                type="button"
-                className={folder.id === selectedFolderId ? "row-btn is-active" : "row-btn"}
-                onClick={() => setSelectedFolderId(folder.id)}
-              >
-                <span>[F] {folder.name}</span>
-                <small>{projectTasks.filter((task) => task.folder_id === folder.id).length}件</small>
-              </button>
-            </li>
-          ))}
-        </ul>
-        {selectedProjectId && folders.length === 0 && <p className="empty-note">フォルダがありません。</p>}
-      </article>
 
-      <article className="panel task-panel">
-        <h2>タスク {selectedFolder ? `(${selectedFolder.name})` : ""}</h2>
-        <div className="task-form-grid">
-          <input
-            placeholder="タスク名"
-            value={newTaskName}
-            onChange={(event) => setNewTaskName(event.target.value)}
-            disabled={!selectedFolderId}
-          />
-          <label className="color-input">
-            色
-            <input
-              type="color"
-              value={newTaskColor}
-              onChange={(event) => setNewTaskColor(event.target.value)}
-              disabled={!selectedFolderId}
-            />
-          </label>
-          <textarea
-            placeholder="概要（140文字以内）"
-            maxLength={140}
-            value={newTaskOverview}
-            onChange={(event) => setNewTaskOverview(event.target.value)}
-            disabled={!selectedFolderId}
-          />
-          <textarea
-            placeholder="詳細（文字数制限なし）"
-            value={newTaskDetails}
-            onChange={(event) => setNewTaskDetails(event.target.value)}
-            disabled={!selectedFolderId}
-          />
-          <div className="links-block">
-            <p>関連リンク（最大4件）</p>
-            {newTaskLinks.map((link, index) => (
-              <div className="link-row" key={`new-link-${index}`}>
-                <input
-                  placeholder="表示名"
-                  value={link.label}
-                  onChange={(event) => handleLinkChange(index, "label", event.target.value)}
-                  disabled={!selectedFolderId}
-                />
-                <input
-                  placeholder="URL または パス"
-                  value={link.url}
-                  onChange={(event) => handleLinkChange(index, "url", event.target.value)}
-                  disabled={!selectedFolderId}
-                />
+        {selectedProject && !selectedFolder && !selectedTask && (
+          <div className="detail-stack">
+            {!isEditingProject ? (
+              <div className="task-detail">
+                <div className="detail-view-head">
+                  <h3>{selectedProject.name}</h3>
+                  <button type="button" className="btn-edit" onClick={() => startEditingProject(selectedProject)}>
+                    編集
+                  </button>
+                </div>
+                <p>
+                  <strong>色:</strong> <span className="color-dot" style={{ backgroundColor: selectedProject.color }} /> {selectedProject.color}
+                </p>
+                <p>
+                  <strong>概要:</strong> {selectedProject.description || "-"}
+                </p>
+                <p>
+                  <strong>詳細:</strong> {selectedProject.details || "-"}
+                </p>
               </div>
-            ))}
-          </div>
-          <button type="button" className="btn-main" onClick={handleCreateTask} disabled={!selectedFolderId}>
-            タスク追加
-          </button>
-        </div>
+            ) : (
+              <div className="task-form-grid">
+                <label className="form-label">プロジェクト名
+                  <input value={editProjectName} onChange={(e) => setEditProjectName(e.target.value)} />
+                </label>
+                <label className="color-input">色
+                  <input type="color" value={editProjectColor} onChange={(e) => setEditProjectColor(e.target.value)} />
+                </label>
+                <label className="form-label">概要
+                  <input placeholder="概要" value={editProjectDescription} onChange={(e) => setEditProjectDescription(e.target.value)} />
+                </label>
+                <label className="form-label">詳細
+                  <textarea placeholder="詳細" value={editProjectDetails} onChange={(e) => setEditProjectDetails(e.target.value)} />
+                </label>
+                <div className="edit-actions">
+                  <button type="button" onClick={() => setIsEditingProject(false)}>キャンセル</button>
+                  <button type="button" className="btn-main" onClick={handleUpdateProject}>保存</button>
+                </div>
+              </div>
+            )}
 
-        <ul className="tree-list task-list">
-          {selectedFolderTasks.map((task) => (
-            <li key={task.id}>
-              <button
-                type="button"
-                className={task.id === selectedTaskId ? "row-btn is-active" : "row-btn"}
-                onClick={() => setSelectedTaskId(task.id)}
-              >
-                <span>
-                  <span className="color-dot" style={{ backgroundColor: task.color }} />
-                  {task.name}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-
-        {hasNoTaskInFolder && <p className="empty-note">タスク0件</p>}
-
-        {selectedTask && (
-          <div className="task-detail">
-            <h3>{selectedTask.name}</h3>
-            <p>
-              <strong>プロジェクト名:</strong> {selectedProject?.name ?? "-"}
-            </p>
-            <p>
-              <strong>色:</strong> <span className="color-dot" style={{ backgroundColor: selectedTask.color }} /> {selectedTask.color}
-            </p>
-            <p>
-              <strong>概要:</strong> {selectedTask.overview || "-"}
-            </p>
-            <p>
-              <strong>詳細:</strong> {selectedTask.details || "-"}
-            </p>
-            <div>
-              <strong>関連リンク:</strong>
-              <ul className="link-list">
-                {formatLinks(selectedTask.related_links).map((link, index) => (
-                  <li key={`${selectedTask.id}-link-${index}`}>
-                    <a href={link.url} target="_blank" rel="noreferrer">
-                      {link.display_name}
-                    </a>
-                  </li>
-                ))}
-                {formatLinks(selectedTask.related_links).length === 0 && <li>-</li>}
-              </ul>
+            <div className="create-kind-row">
+              <label>
+                新規作成
+                <select value={projectCreateKind} onChange={(event) => setProjectCreateKind(event.target.value as "folder" | "task")}>
+                  <option value="folder">フォルダ</option>
+                  <option value="task">タスク</option>
+                </select>
+              </label>
             </div>
-            <button type="button" className="btn-main" onClick={() => setTimerTargetTask(selectedTask)}>
-              タイマー開始
-            </button>
+
+            {projectCreateKind === "folder" && (
+              <div className="inline-form">
+                <input
+                  placeholder="このプロジェクトに新規フォルダ"
+                  value={newFolderName}
+                  onChange={(event) => setNewFolderName(event.target.value)}
+                />
+                <select value={newFolderParentId} onChange={(event) => setNewFolderParentId(event.target.value)}>
+                  <option value="">ルート</option>
+                  {folders.map((folder) => (
+                    <option key={folder.id} value={folder.id}>
+                      {folder.name}
+                    </option>
+                  ))}
+                </select>
+                <button type="button" onClick={handleCreateFolder}>
+                  フォルダ追加
+                </button>
+              </div>
+            )}
+
+            {projectCreateKind === "task" && (
+              <div className="task-form-grid">
+                <select value={projectTaskFolderId} onChange={(event) => setProjectTaskFolderId(event.target.value)}>
+                  <option value="">保存先フォルダを選択</option>
+                  {folders.map((folder) => (
+                    <option key={folder.id} value={folder.id}>
+                      {folder.name}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  placeholder="タスク名"
+                  value={newTaskName}
+                  onChange={(event) => setNewTaskName(event.target.value)}
+                  disabled={!projectTaskFolderId}
+                />
+                <label className="color-input">
+                  色
+                  <input
+                    type="color"
+                    value={newTaskColor}
+                    onChange={(event) => setNewTaskColor(event.target.value)}
+                    disabled={!projectTaskFolderId}
+                  />
+                </label>
+                <textarea
+                  placeholder="概要（140文字以内）"
+                  maxLength={140}
+                  value={newTaskOverview}
+                  onChange={(event) => setNewTaskOverview(event.target.value)}
+                  disabled={!projectTaskFolderId}
+                />
+                <textarea
+                  placeholder="詳細（文字数制限なし）"
+                  value={newTaskDetails}
+                  onChange={(event) => setNewTaskDetails(event.target.value)}
+                  disabled={!projectTaskFolderId}
+                />
+                <button
+                  type="button"
+                  className="btn-main"
+                  onClick={() => {
+                    void handleCreateTask(projectTaskFolderId);
+                  }}
+                  disabled={!projectTaskFolderId}
+                >
+                  タスク追加
+                </button>
+                {folders.length === 0 && <p className="empty-note">先にフォルダを作成してください。</p>}
+              </div>
+            )}
           </div>
         )}
+
+        {selectedFolder && !selectedTask && (
+          <div className="detail-stack">
+            <div className="task-detail">
+              <h3>{selectedFolder.name}</h3>
+              <p>
+                <strong>所属プロジェクト:</strong> {selectedProject?.name ?? "-"}
+              </p>
+              <p>
+                <strong>タスク数:</strong> {selectedFolderTasks.length}
+              </p>
+            </div>
+
+            <div className="task-form-grid">
+              <input
+                placeholder="タスク名"
+                value={newTaskName}
+                onChange={(event) => setNewTaskName(event.target.value)}
+                disabled={!selectedFolderId}
+              />
+              <label className="color-input">
+                色
+                <input
+                  type="color"
+                  value={newTaskColor}
+                  onChange={(event) => setNewTaskColor(event.target.value)}
+                  disabled={!selectedFolderId}
+                />
+              </label>
+              <textarea
+                placeholder="概要（140文字以内）"
+                maxLength={140}
+                value={newTaskOverview}
+                onChange={(event) => setNewTaskOverview(event.target.value)}
+                disabled={!selectedFolderId}
+              />
+              <textarea
+                placeholder="詳細（文字数制限なし）"
+                value={newTaskDetails}
+                onChange={(event) => setNewTaskDetails(event.target.value)}
+                disabled={!selectedFolderId}
+              />
+              <div className="links-block">
+                <p>関連リンク（最大4件）</p>
+                {newTaskLinks.map((link, index) => (
+                  <div className="link-row" key={`new-link-${index}`}>
+                    <input
+                      placeholder="表示名"
+                      value={link.label}
+                      onChange={(event) => handleLinkChange(index, "label", event.target.value)}
+                      disabled={!selectedFolderId}
+                    />
+                    <input
+                      placeholder="URL または パス"
+                      value={link.url}
+                      onChange={(event) => handleLinkChange(index, "url", event.target.value)}
+                      disabled={!selectedFolderId}
+                    />
+                  </div>
+                ))}
+              </div>
+              <button
+                type="button"
+                className="btn-main"
+                onClick={() => {
+                  void handleCreateTask();
+                }}
+                disabled={!selectedFolderId}
+              >
+                タスク追加
+              </button>
+            </div>
+
+            {hasNoTaskInFolder && <p className="empty-note">タスク0件</p>}
+          </div>
+        )}
+
+        {selectedTask && (
+          <div className="detail-stack">
+            <div className="task-detail">
+              <h3>{selectedTask.name}</h3>
+              <p>
+                <strong>プロジェクト名:</strong> {selectedProject?.name ?? "-"}
+              </p>
+              <p>
+                <strong>フォルダ名:</strong> {selectedFolder?.name ?? "-"}
+              </p>
+              <p>
+                <strong>色:</strong> <span className="color-dot" style={{ backgroundColor: selectedTask.color }} /> {selectedTask.color}
+              </p>
+              <p>
+                <strong>概要:</strong> {selectedTask.overview || "-"}
+              </p>
+              <p>
+                <strong>詳細:</strong> {selectedTask.details || "-"}
+              </p>
+              <div>
+                <strong>関連リンク:</strong>
+                <ul className="link-list">
+                  {formatLinks(selectedTask.related_links).map((link, index) => (
+                    <li key={`${selectedTask.id}-link-${index}`}>
+                      <a href={link.url} target="_blank" rel="noreferrer">
+                        {link.display_name}
+                      </a>
+                    </li>
+                  ))}
+                  {formatLinks(selectedTask.related_links).length === 0 && <li>-</li>}
+                </ul>
+              </div>
+              <button type="button" className="btn-main" onClick={() => setTimerTargetTask(selectedTask)}>
+                タイマー開始
+              </button>
+            </div>
+          </div>
+        )}
+
       </article>
+      )}
     </section>
   );
 
   const renderCalendarView = () => (
     <section className="calendar-wrap">
-      <article className="panel calendar-panel">
+      <article className="panel calendar-panel" ref={calendarPanelRef}>
         <div className="calendar-head">
-          <h2>月間カレンダー</h2>
+          <div className="calendar-head-main">
+            <h2>月間カレンダー</h2>
+            <button
+              type="button"
+              className="calendar-create-toggle"
+              onClick={() => setShowCalendarCreateForm((prev) => !prev)}
+            >
+              {showCalendarCreateForm ? "閉じる" : "作成"}
+            </button>
+          </div>
           <div className="calendar-month-nav">
             <button type="button" onClick={() => setCurrentMonth(new Date(currentMonth.getFullYear(), currentMonth.getMonth() - 1, 1))}>
               前月
@@ -749,9 +1302,47 @@ function App() {
           </div>
         </div>
 
+        {showCalendarCreateForm && (
+          <div
+            ref={calendarPopoverRef}
+            className={calendarPopoverDrag ? "calendar-popover is-dragging" : "calendar-popover"}
+            style={calendarPopoverPosition ?? undefined}
+          >
+            <div className="calendar-popover-head" onPointerDown={handleCalendarPopoverDragStart}>
+              <h3>イベント追加</h3>
+              <button type="button" className="calendar-popover-close" onClick={() => setShowCalendarCreateForm(false)}>
+                ×
+              </button>
+            </div>
+            <div className="task-form-grid">
+              <input placeholder="タイトル" value={newEventTitle} onChange={(e) => setNewEventTitle(e.target.value)} />
+              <input type="date" value={newEventDate} onChange={(e) => setNewEventDate(e.target.value)} />
+              <div className="time-row">
+                <input type="time" value={newEventStart} onChange={(e) => setNewEventStart(e.target.value)} />
+                <input type="time" value={newEventEnd} onChange={(e) => setNewEventEnd(e.target.value)} />
+              </div>
+              <select value={newEventTaskId} onChange={(e) => setNewEventTaskId(e.target.value)}>
+                <option value="">タスク未指定</option>
+                {projectTasks.map((task) => (
+                  <option key={task.id} value={task.id}>
+                    {task.name}
+                  </option>
+                ))}
+              </select>
+              <textarea placeholder="メモ" value={newEventNote} onChange={(e) => setNewEventNote(e.target.value)} />
+              <button type="button" className="btn-main" onClick={handleCreateCalendarEvent}>
+                追加
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="calendar-grid">
-          {["月", "火", "水", "木", "金", "土", "日"].map((w) => (
-            <div key={w} className="calendar-weekday">
+          {["月", "火", "水", "木", "金", "土", "日"].map((w, index) => (
+            <div
+              key={w}
+              className={index === 5 ? "calendar-weekday is-sat" : index === 6 ? "calendar-weekday is-sun" : "calendar-weekday"}
+            >
               {w}
             </div>
           ))}
@@ -773,30 +1364,6 @@ function App() {
               </div>
             );
           })}
-        </div>
-      </article>
-
-      <article className="panel calendar-form-panel">
-        <h2>イベント追加</h2>
-        <div className="task-form-grid">
-          <input placeholder="タイトル" value={newEventTitle} onChange={(e) => setNewEventTitle(e.target.value)} />
-          <input type="date" value={newEventDate} onChange={(e) => setNewEventDate(e.target.value)} />
-          <div className="time-row">
-            <input type="time" value={newEventStart} onChange={(e) => setNewEventStart(e.target.value)} />
-            <input type="time" value={newEventEnd} onChange={(e) => setNewEventEnd(e.target.value)} />
-          </div>
-          <select value={newEventTaskId} onChange={(e) => setNewEventTaskId(e.target.value)}>
-            <option value="">タスク未指定</option>
-            {projectTasks.map((task) => (
-              <option key={task.id} value={task.id}>
-                {task.name}
-              </option>
-            ))}
-          </select>
-          <textarea placeholder="メモ" value={newEventNote} onChange={(e) => setNewEventNote(e.target.value)} />
-          <button type="button" className="btn-main" onClick={handleCreateCalendarEvent}>
-            追加
-          </button>
         </div>
       </article>
     </section>
@@ -823,7 +1390,7 @@ function App() {
         <div className="weekly-grid">
           {weekDays.map((d) => (
             <div key={dateToYmdNumber(d)} className="weekly-day-card">
-              <p className="weekly-day-title">
+              <p className={d.getDay() === 6 ? "weekly-day-title is-sat" : d.getDay() === 0 ? "weekly-day-title is-sun" : "weekly-day-title"}>
                 {d.getMonth() + 1}/{d.getDate()} ({["日", "月", "火", "水", "木", "金", "土"][d.getDay()]})
               </p>
               <p className="weekly-day-note">計画・実行はタスク単位で管理</p>
@@ -902,9 +1469,9 @@ function App() {
 
   return (
     <main className="app-shell">
-      <div className="custom-titlebar" data-tauri-drag-region>
-        <div className="titlebar-title" data-tauri-drag-region>
-          Secretariat
+      <div className="custom-titlebar" onMouseDown={handleTitlebarMouseDown}>
+        <div className="titlebar-drag-area">
+          <div className="titlebar-title">Secretariat</div>
         </div>
         <div className="titlebar-controls">
           <button type="button" className="titlebar-btn" aria-label="最小化" onClick={handleMinimize}>
@@ -941,13 +1508,13 @@ function App() {
         <nav>
           <ul className="menu-list">
             <li>
-              <button type="button" onClick={() => { setActiveView("projects"); closeMenu(); }}>
-                プロジェクト管理
+              <button type="button" onClick={() => { setActiveView("calendar"); closeMenu(); }}>
+                カレンダー
               </button>
             </li>
             <li>
-              <button type="button" onClick={() => { setActiveView("calendar"); closeMenu(); }}>
-                カレンダー
+              <button type="button" onClick={() => { setActiveView("projects"); closeMenu(); }}>
+                プロジェクト管理
               </button>
             </li>
             <li>
@@ -967,20 +1534,6 @@ function App() {
       />
 
       <div className="content-area">
-        <header className="hero">
-          <p className="hero-tag">Secretariat</p>
-          <h1>
-            {activeView === "projects" && "プロジェクト管理"}
-            {activeView === "calendar" && "カレンダー"}
-            {activeView === "weekly" && "週予定"}
-          </h1>
-          <div className="view-tabs">
-            <button type="button" className={activeView === "projects" ? "is-active" : ""} onClick={() => setActiveView("projects")}>プロジェクト</button>
-            <button type="button" className={activeView === "calendar" ? "is-active" : ""} onClick={() => setActiveView("calendar")}>カレンダー</button>
-            <button type="button" className={activeView === "weekly" ? "is-active" : ""} onClick={() => setActiveView("weekly")}>週予定</button>
-          </div>
-        </header>
-
         {errorMessage && <p className="error-banner">{errorMessage}</p>}
 
         {activeView === "projects" && renderProjectsView()}
@@ -990,8 +1543,9 @@ function App() {
         {timerTargetTask && (
           <section className="timer-modal">
             <div className="timer-card">
-              <h3>タイマー設定</h3>
+              <h3>タイマー</h3>
               <p>対象タスク: {timerTargetTask.name}</p>
+              <p className="timer-status">残り時間: {secToLabel(timerRemainingSeconds)}</p>
               <label>
                 分数
                 <input
@@ -1000,15 +1554,42 @@ function App() {
                   max={600}
                   value={timerMinutes}
                   onChange={(event) => setTimerMinutes(Number(event.target.value) || 25)}
+                  disabled={timerIsRunning}
                 />
               </label>
+              {timerIsRunning && <p className="timer-note">実行中です。終了して保存を押すと記録されます。</p>}
+              {!timerIsRunning && activeTimerSessionId && <p className="timer-note">一時停止中です。再開または終了して保存を選べます。</p>}
               <div className="timer-actions">
-                <button type="button" onClick={() => setTimerTargetTask(null)}>
-                  閉じる
-                </button>
-                <button type="button" className="btn-main" onClick={() => setTimerTargetTask(null)}>
-                  開始（次実装）
-                </button>
+                {!timerIsRunning && !activeTimerSessionId && (
+                  <>
+                    <button type="button" className="timer-btn-secondary" onClick={closeTimerModal}>
+                      閉じる
+                    </button>
+                    <button type="button" className="btn-main" onClick={() => { void handleStartTimer(); }}>
+                      開始
+                    </button>
+                  </>
+                )}
+                {timerIsRunning && (
+                  <>
+                    <button type="button" className="timer-btn-secondary" onClick={handlePauseTimer}>
+                      一時停止
+                    </button>
+                    <button type="button" className="timer-btn-danger" onClick={() => { void handleStopTimer(); }}>
+                      終了して保存
+                    </button>
+                  </>
+                )}
+                {!timerIsRunning && !!activeTimerSessionId && (
+                  <>
+                    <button type="button" className="btn-main" onClick={handleResumeTimer}>
+                      再開
+                    </button>
+                    <button type="button" className="timer-btn-danger" onClick={() => { void handleStopTimer(); }}>
+                      終了して保存
+                    </button>
+                  </>
+                )}
               </div>
             </div>
           </section>
