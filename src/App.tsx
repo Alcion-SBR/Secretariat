@@ -18,6 +18,9 @@ type Folder = {
   project_id: string;
   parent_folder_id?: string | null;
   name: string;
+  color: string;
+  description?: string | null;
+  details?: string | null;
 };
 
 type Task = {
@@ -70,6 +73,10 @@ type LinkInput = {
   url: string;
 };
 
+type ScheduleDetailSelection =
+  | { kind: "event"; source: "calendar" | "weekly"; event: CalendarEvent }
+  | { kind: "session"; source: "weekly"; session: TimerSession };
+
 const emptyLinks: LinkInput[] = Array.from({ length: 4 }, () => ({ label: "", url: "" }));
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
@@ -94,6 +101,127 @@ const secToLabel = (seconds: number) => {
   const s = seconds % 60;
   return `${pad2(m)}:${pad2(s)}`;
 };
+const secondsToHoursLabel = (seconds: number) => `${(seconds / 3600).toFixed(1)}h`;
+const secondsToMinutesLabel = (seconds: number) => `${Math.max(1, Math.round(seconds / 60))}分`;
+const unixToHm = (unixSeconds: number) => {
+  const d = new Date(unixSeconds * 1000);
+  return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+};
+const unixToMinuteOfDay = (unixSeconds: number) => {
+  const d = new Date(unixSeconds * 1000);
+  return d.getHours() * 60 + d.getMinutes();
+};
+const ymdToLabel = (ymd: number) => {
+  const raw = String(ymd);
+  if (raw.length !== 8) {
+    return raw;
+  }
+  return `${Number(raw.slice(4, 6))}/${Number(raw.slice(6, 8))}`;
+};
+const ARCHIVE_STORAGE_KEY = "secretariat-archives";
+const TREE_ORDER_STORAGE_KEY = "secretariat-tree-order";
+
+type TreeOrderState = {
+  projects: string[];
+  folders: Record<string, string[]>;
+};
+
+type TreeDragPayload =
+  | { kind: "project"; projectId: string }
+  | { kind: "folder"; projectId: string; folderId: string; parentFolderId: string | null };
+
+const DRAG_MIME = "application/x-secretariat-tree-dnd";
+
+const mergeOrderedIds = (savedIds: string[], actualIds: string[]) => {
+  const actualSet = new Set(actualIds);
+  const kept = savedIds.filter((id) => actualSet.has(id));
+  const keptSet = new Set(kept);
+  const appended = actualIds.filter((id) => !keptSet.has(id));
+  return [...kept, ...appended];
+};
+
+const moveBefore = (ids: string[], movingId: string, targetId: string) => {
+  if (movingId === targetId) {
+    return ids;
+  }
+  const next = ids.filter((id) => id !== movingId);
+  const targetIndex = next.indexOf(targetId);
+  if (targetIndex < 0) {
+    return next;
+  }
+  next.splice(targetIndex, 0, movingId);
+  return next;
+};
+
+const getFolderOrderKey = (projectId: string, parentFolderId: string | null) =>
+  `${projectId}::${parentFolderId ?? "root"}`;
+
+const loadTreeOrderState = (): TreeOrderState => {
+  try {
+    const raw = window.localStorage.getItem(TREE_ORDER_STORAGE_KEY);
+    if (!raw) {
+      return { projects: [], folders: {} };
+    }
+    const parsed = JSON.parse(raw) as { projects?: string[]; folders?: Record<string, string[]> };
+    return {
+      projects: Array.isArray(parsed.projects) ? parsed.projects : [],
+      folders:
+        parsed.folders && typeof parsed.folders === "object"
+          ? Object.fromEntries(
+              Object.entries(parsed.folders).map(([key, ids]) => [
+                key,
+                Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : [],
+              ]),
+            )
+          : {},
+    };
+  } catch {
+    return { projects: [], folders: {} };
+  }
+};
+const loadArchiveState = () => {
+  try {
+    const raw = window.localStorage.getItem(ARCHIVE_STORAGE_KEY);
+    if (!raw) {
+      return { projects: [] as string[], folders: [] as string[], tasks: [] as string[] };
+    }
+    const parsed = JSON.parse(raw) as { projects?: string[]; folders?: string[]; tasks?: string[] };
+    return {
+      projects: Array.isArray(parsed.projects) ? parsed.projects : [],
+      folders: Array.isArray(parsed.folders) ? parsed.folders : [],
+      tasks: Array.isArray(parsed.tasks) ? parsed.tasks : [],
+    };
+  } catch {
+    return { projects: [] as string[], folders: [] as string[], tasks: [] as string[] };
+  }
+};
+const getSessionDurationSeconds = (session: TimerSession) => {
+  if (typeof session.duration === "number" && session.duration > 0) {
+    return session.duration;
+  }
+  if (typeof session.end_time === "number") {
+    return Math.max(0, session.end_time - session.start_time);
+  }
+  return 0;
+};
+
+const getTimelineBlockStyle = (
+  startMinute: number,
+  endMinute: number,
+  timelineStartMinute: number,
+  timelineEndMinute: number,
+) => {
+  const totalMinutes = Math.max(1, timelineEndMinute - timelineStartMinute);
+  const safeStart = clamp(startMinute, timelineStartMinute, timelineEndMinute - 15);
+  const safeEnd = clamp(Math.max(endMinute, safeStart + 15), timelineStartMinute + 15, timelineEndMinute);
+  const top = ((safeStart - timelineStartMinute) / totalMinutes) * 100;
+  const height = Math.max(((safeEnd - safeStart) / totalMinutes) * 100, 2.8);
+
+  return {
+    top: `${top}%`,
+    height: `${height}%`,
+  };
+};
 
 const getMonday = (base: Date) => {
   const d = new Date(base);
@@ -107,6 +235,7 @@ const getMonday = (base: Date) => {
 function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [activeView, setActiveView] = useState<ViewMode>("projects");
+  const [isTreeReorderMode, setIsTreeReorderMode] = useState(false);
 
   const [projects, setProjects] = useState<Project[]>([]);
   const [folders, setFolders] = useState<Folder[]>([]);
@@ -126,6 +255,9 @@ function App() {
   const [newProjectColor, setNewProjectColor] = useState("#2f80cc");
 
   const [newFolderName, setNewFolderName] = useState("");
+  const [newFolderColor, setNewFolderColor] = useState("#2f80cc");
+  const [newFolderDescription, setNewFolderDescription] = useState("");
+  const [newFolderDetails, setNewFolderDetails] = useState("");
   const [newFolderParentId, setNewFolderParentId] = useState("");
   const [projectCreateKind, setProjectCreateKind] = useState<"folder" | "task">("folder");
   const [projectTaskFolderId, setProjectTaskFolderId] = useState("");
@@ -150,9 +282,17 @@ function App() {
   const [editProjectColor, setEditProjectColor] = useState("#2f80cc");
   const [editProjectDescription, setEditProjectDescription] = useState("");
   const [editProjectDetails, setEditProjectDetails] = useState("");
+  const [isEditingTask, setIsEditingTask] = useState(false);
+  const [editTaskName, setEditTaskName] = useState("");
+  const [editTaskColor, setEditTaskColor] = useState("#2f80cc");
+  const [editTaskOverview, setEditTaskOverview] = useState("");
+  const [editTaskDetails, setEditTaskDetails] = useState("");
+  const [editTaskLinks, setEditTaskLinks] = useState<LinkInput[]>(emptyLinks);
 
   const [currentMonth, setCurrentMonth] = useState(new Date());
   const [calendarEvents, setCalendarEvents] = useState<CalendarEvent[]>([]);
+  const [selectedScheduleDetail, setSelectedScheduleDetail] = useState<ScheduleDetailSelection | null>(null);
+  const [selectedScheduleTask, setSelectedScheduleTask] = useState<Task | null>(null);
   const [newEventTitle, setNewEventTitle] = useState("");
   const [newEventDate, setNewEventDate] = useState("");
   const [newEventStart, setNewEventStart] = useState("09:00");
@@ -165,10 +305,24 @@ function App() {
 
   const [weeklyBaseDate, setWeeklyBaseDate] = useState(getMonday(new Date()));
   const [weeklyGoals, setWeeklyGoals] = useState<WeeklyGoal[]>([]);
+  const [weeklyCalendarEvents, setWeeklyCalendarEvents] = useState<CalendarEvent[]>([]);
   const [weeklyGoalType, setWeeklyGoalType] = useState<"project" | "task">("project");
   const [weeklyProjectId, setWeeklyProjectId] = useState("");
   const [weeklyTaskId, setWeeklyTaskId] = useState("");
   const [weeklyTargetHours, setWeeklyTargetHours] = useState(5);
+  const [calendarActualByDate, setCalendarActualByDate] = useState<Record<number, number>>({});
+  const [weeklyActualByDate, setWeeklyActualByDate] = useState<Record<number, number>>({});
+  const [weeklySessionsByDate, setWeeklySessionsByDate] = useState<Record<number, TimerSession[]>>({});
+  const [weeklyActualTotalSeconds, setWeeklyActualTotalSeconds] = useState(0);
+  const [taskRecentSessions, setTaskRecentSessions] = useState<TimerSession[]>([]);
+  const [showArchivedEntities, setShowArchivedEntities] = useState(false);
+  const [archivedProjectIds, setArchivedProjectIds] = useState<string[]>([]);
+  const [archivedFolderIds, setArchivedFolderIds] = useState<string[]>([]);
+  const [archivedTaskIds, setArchivedTaskIds] = useState<string[]>([]);
+  const [projectOrderIds, setProjectOrderIds] = useState<string[]>([]);
+  const [folderOrderByParent, setFolderOrderByParent] = useState<Record<string, string[]>>({});
+  const [editingWeeklyGoalId, setEditingWeeklyGoalId] = useState<string>("");
+  const [editingWeeklyGoalTarget, setEditingWeeklyGoalTarget] = useState(1);
 
   const closeMenu = () => setMenuOpen(false);
   const appWindow = getCurrentWindow();
@@ -190,16 +344,47 @@ function App() {
     [projectTasks, tasks, selectedTaskId],
   );
 
+  const knownTasksById = useMemo(() => {
+    const taskMap = new Map<string, Task>();
+    [...projectTasks, ...tasks].forEach((task) => {
+      if (!taskMap.has(task.id)) {
+        taskMap.set(task.id, task);
+      }
+    });
+    return taskMap;
+  }, [projectTasks, tasks]);
+
+  const archivedProjectSet = useMemo(() => new Set(archivedProjectIds), [archivedProjectIds]);
+  const archivedFolderSet = useMemo(() => new Set(archivedFolderIds), [archivedFolderIds]);
+  const archivedTaskSet = useMemo(() => new Set(archivedTaskIds), [archivedTaskIds]);
+
+  const visibleProjects = useMemo(
+    () => (showArchivedEntities ? projects : projects.filter((project) => !archivedProjectSet.has(project.id))),
+    [projects, showArchivedEntities, archivedProjectSet],
+  );
+
+  const orderedVisibleProjects = useMemo(() => {
+    const mergedOrder = mergeOrderedIds(projectOrderIds, visibleProjects.map((project) => project.id));
+    const projectById = new Map(visibleProjects.map((project) => [project.id, project]));
+    return mergedOrder.map((id) => projectById.get(id)).filter((project): project is Project => !!project);
+  }, [visibleProjects, projectOrderIds]);
+
+  const visibleFolders = useMemo(
+    () => (showArchivedEntities ? folders : folders.filter((folder) => !archivedFolderSet.has(folder.id))),
+    [folders, showArchivedEntities, archivedFolderSet],
+  );
+
+  const visibleProjectTasks = useMemo(
+    () => (showArchivedEntities ? projectTasks : projectTasks.filter((task) => !archivedTaskSet.has(task.id))),
+    [projectTasks, showArchivedEntities, archivedTaskSet],
+  );
+
   const selectedFolderTasks = useMemo(
-    () => projectTasks.filter((task) => task.folder_id === selectedFolderId),
-    [projectTasks, selectedFolderId],
+    () => visibleProjectTasks.filter((task) => task.folder_id === selectedFolderId),
+    [visibleProjectTasks, selectedFolderId],
   );
 
   const hasNoTaskInFolder = selectedFolderId && selectedFolderTasks.length === 0;
-  const rootFolders = useMemo(
-    () => folders.filter((folder) => !folder.parent_folder_id),
-    [folders],
-  );
 
   const monthLabel = `${currentMonth.getFullYear()}年 ${currentMonth.getMonth() + 1}月`;
 
@@ -353,9 +538,161 @@ function App() {
     }
   };
 
+  const loadWeeklyCalendarEvents = async () => {
+    const startDate = dateToYmdNumber(weekDays[0]);
+    const endDate = dateToYmdNumber(weekDays[6]);
+    try {
+      const response = await invoke<ApiResponse<CalendarEvent[]>>("list_calendar_events_in_range", {
+        startDate,
+        endDate,
+      });
+      if (!response.success) {
+        setWeeklyCalendarEvents([]);
+        return;
+      }
+      setWeeklyCalendarEvents(response.data ?? []);
+    } catch {
+      setWeeklyCalendarEvents([]);
+    }
+  };
+
+  const loadTimerSummaryByDates = async (dates: number[]) => {
+    const nextByDate: Record<number, number> = {};
+    const nextSessionsByDate: Record<number, TimerSession[]> = {};
+    let total = 0;
+
+    try {
+      const responses = await Promise.all(
+        dates.map((date) => invoke<ApiResponse<TimerSession[]>>("list_timer_sessions_by_date", { date })),
+      );
+
+      responses.forEach((response, index) => {
+        if (!response.success) {
+          return;
+        }
+        const date = dates[index];
+        const sessions = (response.data ?? []).filter((session) => getSessionDurationSeconds(session) > 0);
+        const seconds = sessions.reduce((sum, session) => sum + getSessionDurationSeconds(session), 0);
+        nextByDate[date] = seconds;
+        nextSessionsByDate[date] = sessions;
+        total += seconds;
+      });
+
+      return { byDate: nextByDate, sessionsByDate: nextSessionsByDate, total };
+    } catch {
+      setErrorMessage("作業記録の取得に失敗しました。");
+      return null;
+    }
+  };
+
+  const loadCalendarActualForMonth = async (baseMonth: Date) => {
+    const lastDate = new Date(baseMonth.getFullYear(), baseMonth.getMonth() + 1, 0).getDate();
+    const dates = Array.from({ length: lastDate }, (_, i) => {
+      const d = new Date(baseMonth.getFullYear(), baseMonth.getMonth(), i + 1);
+      return dateToYmdNumber(d);
+    });
+    const summary = await loadTimerSummaryByDates(dates);
+    if (!summary) {
+      return;
+    }
+    setCalendarActualByDate(summary.byDate);
+  };
+
+  const loadWeeklyActualForRange = async () => {
+    const dates = weekDays.map((day) => dateToYmdNumber(day));
+    const summary = await loadTimerSummaryByDates(dates);
+    if (!summary) {
+      return;
+    }
+    setWeeklyActualByDate(summary.byDate);
+    setWeeklySessionsByDate(summary.sessionsByDate);
+    setWeeklyActualTotalSeconds(summary.total);
+  };
+
+  const loadRecentTaskSessions = async (taskId: string) => {
+    if (!taskId) {
+      setTaskRecentSessions([]);
+      return;
+    }
+
+    try {
+      const response = await invoke<ApiResponse<TimerSession[]>>("list_timer_sessions_by_task", { taskId });
+      if (!response.success) {
+        setTaskRecentSessions([]);
+        return;
+      }
+      const sessions = (response.data ?? []).filter((s) => getSessionDurationSeconds(s) > 0);
+      setTaskRecentSessions(sessions.slice(0, 5));
+    } catch {
+      setTaskRecentSessions([]);
+    }
+  };
+
   useEffect(() => {
     void loadProjects();
+    const archived = loadArchiveState();
+    const treeOrder = loadTreeOrderState();
+    setArchivedProjectIds(archived.projects);
+    setArchivedFolderIds(archived.folders);
+    setArchivedTaskIds(archived.tasks);
+    setProjectOrderIds(treeOrder.projects);
+    setFolderOrderByParent(treeOrder.folders);
   }, []);
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      ARCHIVE_STORAGE_KEY,
+      JSON.stringify({
+        projects: archivedProjectIds,
+        folders: archivedFolderIds,
+        tasks: archivedTaskIds,
+      }),
+    );
+  }, [archivedProjectIds, archivedFolderIds, archivedTaskIds]);
+
+  useEffect(() => {
+    window.localStorage.setItem(
+      TREE_ORDER_STORAGE_KEY,
+      JSON.stringify({
+        projects: projectOrderIds,
+        folders: folderOrderByParent,
+      }),
+    );
+  }, [projectOrderIds, folderOrderByParent]);
+
+  useEffect(() => {
+    setProjectOrderIds((prev) => mergeOrderedIds(prev, projects.map((project) => project.id)));
+  }, [projects]);
+
+  useEffect(() => {
+    if (!selectedProjectId) {
+      return;
+    }
+    const groupedByParent = new Map<string, string[]>();
+    folders.forEach((folder) => {
+      const key = getFolderOrderKey(folder.project_id, folder.parent_folder_id ?? null);
+      const list = groupedByParent.get(key) ?? [];
+      list.push(folder.id);
+      groupedByParent.set(key, list);
+    });
+
+    setFolderOrderByParent((prev) => {
+      const next: Record<string, string[]> = { ...prev };
+      const projectPrefix = `${selectedProjectId}::`;
+
+      Object.keys(next).forEach((key) => {
+        if (key.startsWith(projectPrefix) && !groupedByParent.has(key)) {
+          delete next[key];
+        }
+      });
+
+      groupedByParent.forEach((folderIds, key) => {
+        next[key] = mergeOrderedIds(next[key] ?? [], folderIds);
+      });
+
+      return next;
+    });
+  }, [folders, selectedProjectId]);
 
   useEffect(() => {
     void loadFolders(selectedProjectId);
@@ -364,11 +701,39 @@ function App() {
 
   useEffect(() => {
     void loadTasksByFolder(selectedFolderId);
+    setNewFolderParentId(selectedFolderId);
   }, [selectedFolderId]);
 
   useEffect(() => {
     setIsEditingProject(false);
   }, [selectedProjectId]);
+
+  useEffect(() => {
+    setIsEditingTask(false);
+  }, [selectedTaskId]);
+
+  useEffect(() => {
+    if (showArchivedEntities) {
+      return;
+    }
+    if (selectedTaskId && archivedTaskSet.has(selectedTaskId)) {
+      setSelectedTaskId("");
+    }
+    if (selectedFolderId && archivedFolderSet.has(selectedFolderId)) {
+      setSelectedFolderId("");
+    }
+    if (selectedProjectId && archivedProjectSet.has(selectedProjectId)) {
+      setSelectedProjectId("");
+    }
+  }, [
+    showArchivedEntities,
+    selectedTaskId,
+    selectedFolderId,
+    selectedProjectId,
+    archivedTaskSet,
+    archivedFolderSet,
+    archivedProjectSet,
+  ]);
 
   useEffect(() => {
     if (!selectedProjectId) {
@@ -383,14 +748,89 @@ function App() {
   useEffect(() => {
     if (activeView === "calendar") {
       void loadCalendarEventsForMonth(currentMonth);
+      void loadCalendarActualForMonth(currentMonth);
     }
   }, [activeView, currentMonth]);
 
   useEffect(() => {
     if (activeView === "weekly") {
       void loadWeeklyGoals(weekStartYmd);
+      void loadWeeklyCalendarEvents();
+      void loadWeeklyActualForRange();
     }
-  }, [activeView, weekStartYmd]);
+  }, [activeView, weekStartYmd, weekDays]);
+
+  useEffect(() => {
+    void loadRecentTaskSessions(selectedTaskId);
+  }, [selectedTaskId]);
+
+  useEffect(() => {
+    if (!selectedScheduleDetail) {
+      setSelectedScheduleTask(null);
+      return;
+    }
+
+    const taskId = selectedScheduleDetail.kind === "event"
+      ? selectedScheduleDetail.event.task_id ?? ""
+      : selectedScheduleDetail.session.task_id;
+
+    if (!taskId) {
+      setSelectedScheduleTask(null);
+      return;
+    }
+
+    const existingTask = knownTasksById.get(taskId);
+    if (existingTask) {
+      setSelectedScheduleTask(existingTask);
+      return;
+    }
+
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const response = await invoke<ApiResponse<Task>>("get_task", { id: taskId });
+        if (!cancelled && response.success) {
+          setSelectedScheduleTask(response.data ?? null);
+        }
+      } catch {
+        if (!cancelled) {
+          setSelectedScheduleTask(null);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedScheduleDetail, knownTasksById]);
+
+  useEffect(() => {
+    if (!selectedScheduleDetail) {
+      return;
+    }
+
+    if (selectedScheduleDetail.kind === "event" && selectedScheduleDetail.source === "calendar") {
+      if (!calendarEvents.some((event) => event.id === selectedScheduleDetail.event.id)) {
+        setSelectedScheduleDetail(null);
+      }
+      return;
+    }
+
+    if (selectedScheduleDetail.kind === "event" && selectedScheduleDetail.source === "weekly") {
+      if (!weeklyCalendarEvents.some((event) => event.id === selectedScheduleDetail.event.id)) {
+        setSelectedScheduleDetail(null);
+      }
+      return;
+    }
+
+    if (selectedScheduleDetail.kind === "session") {
+      const weeklySessionIds = Object.values(weeklySessionsByDate).flat().map((session) => session.id);
+      if (!weeklySessionIds.includes(selectedScheduleDetail.session.id)) {
+        setSelectedScheduleDetail(null);
+      }
+    }
+  }, [selectedScheduleDetail, calendarEvents, weeklyCalendarEvents, weeklySessionsByDate]);
 
   useEffect(() => {
     const seconds = Math.max(60, (Number(timerMinutes) || 25) * 60);
@@ -506,13 +946,19 @@ function App() {
       const response = await invoke<ApiResponse<Folder>>("create_folder", {
         projectId: selectedProjectId,
         name: newFolderName.trim(),
+        color: newFolderColor,
         parentFolderId: newFolderParentId || null,
+        description: newFolderDescription.trim() || null,
+        details: newFolderDetails.trim() || null,
       });
       if (!response.success) {
         setErrorMessage(response.message ?? "フォルダ作成に失敗しました。");
         return;
       }
       setNewFolderName("");
+      setNewFolderColor("#2f80cc");
+      setNewFolderDescription("");
+      setNewFolderDetails("");
       setNewFolderParentId("");
       await loadFolders(selectedProjectId);
     } catch {
@@ -577,10 +1023,20 @@ function App() {
     });
   };
 
-  const getChildFolders = (parentFolderId: string | null) =>
-    folders.filter((folder) => (parentFolderId ? folder.parent_folder_id === parentFolderId : !folder.parent_folder_id));
+  const getChildFolders = (projectId: string, parentFolderId: string | null) => {
+    const siblings = visibleFolders.filter(
+      (folder) =>
+        folder.project_id === projectId &&
+        (parentFolderId ? folder.parent_folder_id === parentFolderId : !folder.parent_folder_id),
+    );
 
-  const getTasksForFolder = (folderId: string) => projectTasks.filter((task) => task.folder_id === folderId);
+    const orderedIds = folderOrderByParent[getFolderOrderKey(projectId, parentFolderId)] ?? [];
+    const mergedOrder = mergeOrderedIds(orderedIds, siblings.map((folder) => folder.id));
+    const folderById = new Map(siblings.map((folder) => [folder.id, folder]));
+    return mergedOrder.map((id) => folderById.get(id)).filter((folder): folder is Folder => !!folder);
+  };
+
+  const getTasksForFolder = (folderId: string) => visibleProjectTasks.filter((task) => task.folder_id === folderId);
 
   const toggleProjectExpanded = (projectId: string) => {
     setExpandedProjects((prev) => ({ ...prev, [projectId]: !prev[projectId] }));
@@ -613,6 +1069,98 @@ function App() {
     setExpandedFolders((prev) => ({ ...prev, [folderId]: true }));
   };
 
+  const parseTreeDragPayload = (raw: string): TreeDragPayload | null => {
+    try {
+      const parsed = JSON.parse(raw) as Partial<TreeDragPayload>;
+      if (parsed.kind === "project" && typeof parsed.projectId === "string") {
+        return { kind: "project", projectId: parsed.projectId };
+      }
+      if (
+        parsed.kind === "folder" &&
+        typeof parsed.projectId === "string" &&
+        typeof parsed.folderId === "string"
+      ) {
+        return {
+          kind: "folder",
+          projectId: parsed.projectId,
+          folderId: parsed.folderId,
+          parentFolderId: typeof parsed.parentFolderId === "string" ? parsed.parentFolderId : null,
+        };
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  };
+
+  const handleProjectDragStart = (event: React.DragEvent<HTMLButtonElement>, projectId: string) => {
+    if (!isTreeReorderMode) {
+      return;
+    }
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData(DRAG_MIME, JSON.stringify({ kind: "project", projectId }));
+  };
+
+  const handleProjectDrop = (event: React.DragEvent<HTMLButtonElement>, targetProjectId: string) => {
+    if (!isTreeReorderMode) {
+      return;
+    }
+    const payload = parseTreeDragPayload(event.dataTransfer.getData(DRAG_MIME));
+    if (!payload || payload.kind !== "project" || payload.projectId === targetProjectId) {
+      return;
+    }
+    event.preventDefault();
+    setProjectOrderIds((prev) => moveBefore(mergeOrderedIds(prev, projects.map((project) => project.id)), payload.projectId, targetProjectId));
+  };
+
+  const handleFolderDragStart = (event: React.DragEvent<HTMLButtonElement>, folder: Folder) => {
+    if (!isTreeReorderMode) {
+      return;
+    }
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData(
+      DRAG_MIME,
+      JSON.stringify({
+        kind: "folder",
+        projectId: folder.project_id,
+        folderId: folder.id,
+        parentFolderId: folder.parent_folder_id ?? null,
+      }),
+    );
+  };
+
+  const handleFolderDrop = (event: React.DragEvent<HTMLButtonElement>, targetFolder: Folder) => {
+    if (!isTreeReorderMode) {
+      return;
+    }
+    const payload = parseTreeDragPayload(event.dataTransfer.getData(DRAG_MIME));
+    const targetParentFolderId = targetFolder.parent_folder_id ?? null;
+    if (
+      !payload ||
+      payload.kind !== "folder" ||
+      payload.folderId === targetFolder.id ||
+      payload.projectId !== targetFolder.project_id ||
+      payload.parentFolderId !== targetParentFolderId
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    const key = getFolderOrderKey(targetFolder.project_id, targetParentFolderId);
+    const siblingIds = visibleFolders
+      .filter(
+        (folder) =>
+          folder.project_id === targetFolder.project_id &&
+          (targetParentFolderId ? folder.parent_folder_id === targetParentFolderId : !folder.parent_folder_id),
+      )
+      .map((folder) => folder.id);
+
+    setFolderOrderByParent((prev) => {
+      const base = mergeOrderedIds(prev[key] ?? [], siblingIds);
+      return { ...prev, [key]: moveBefore(base, payload.folderId, targetFolder.id) };
+    });
+  };
+
   const startEditingProject = (project: Project) => {
     setEditProjectName(project.name);
     setEditProjectColor(project.color);
@@ -641,6 +1189,211 @@ function App() {
       await loadProjects();
     } catch {
       setErrorMessage("プロジェクトの更新に失敗しました。");
+    }
+  };
+
+  const toEditLinks = (raw: string | null | undefined) => {
+    const existing = formatLinks(raw).slice(0, 4).map((link) => ({
+      label: link.display_name,
+      url: link.url,
+    }));
+    while (existing.length < 4) {
+      existing.push({ label: "", url: "" });
+    }
+    return existing;
+  };
+
+  const toRelatedLinksJson = (links: LinkInput[]) => {
+    const validLinks = links
+      .map((link) => ({ label: link.label.trim(), url: link.url.trim() }))
+      .filter((link) => link.url.length > 0)
+      .slice(0, 4)
+      .map((link) => ({
+        type: link.url.startsWith("http") ? "URL" : "FilePath",
+        url: link.url,
+        display_name: link.label || link.url,
+      }));
+    return validLinks.length > 0 ? JSON.stringify(validLinks) : null;
+  };
+
+  const startEditingTask = (task: Task) => {
+    setEditTaskName(task.name);
+    setEditTaskColor(task.color);
+    setEditTaskOverview(task.overview ?? "");
+    setEditTaskDetails(task.details ?? "");
+    setEditTaskLinks(toEditLinks(task.related_links));
+    setIsEditingTask(true);
+  };
+
+  const handleEditTaskLinkChange = (index: number, key: keyof LinkInput, value: string) => {
+    setEditTaskLinks((prev) => {
+      const next = [...prev];
+      next[index] = { ...next[index], [key]: value };
+      return next;
+    });
+  };
+
+  const handleUpdateTask = async () => {
+    if (!selectedTaskId || !editTaskName.trim()) {
+      return;
+    }
+    if (editTaskOverview.trim().length > 140) {
+      setErrorMessage("概要は140文字以内で入力してください。");
+      return;
+    }
+    try {
+      const response = await invoke<ApiResponse<Task>>("update_task", {
+        id: selectedTaskId,
+        name: editTaskName.trim(),
+        color: editTaskColor,
+        overview: editTaskOverview.trim() || null,
+        details: editTaskDetails.trim() || null,
+        relatedLinks: toRelatedLinksJson(editTaskLinks),
+      });
+      if (!response.success) {
+        setErrorMessage(response.message ?? "タスク更新に失敗しました。");
+        return;
+      }
+      setIsEditingTask(false);
+      if (selectedFolderId) {
+        await loadTasksByFolder(selectedFolderId);
+      }
+      await loadProjectTasks(selectedProjectId);
+    } catch {
+      setErrorMessage("タスク更新に失敗しました。");
+    }
+  };
+
+  const handleArchiveProject = () => {
+    if (!selectedProjectId) {
+      return;
+    }
+    const ok = window.confirm("このプロジェクトをアーカイブします。よろしいですか？");
+    if (!ok) {
+      return;
+    }
+    setArchivedProjectIds((prev) => (prev.includes(selectedProjectId) ? prev : [...prev, selectedProjectId]));
+    setSelectedProjectId("");
+    setSelectedFolderId("");
+    setSelectedTaskId("");
+  };
+
+  const handleUnarchiveProject = () => {
+    if (!selectedProjectId) {
+      return;
+    }
+    setArchivedProjectIds((prev) => prev.filter((id) => id !== selectedProjectId));
+  };
+
+  const handleDeleteProject = async () => {
+    if (!selectedProjectId) {
+      return;
+    }
+    const ok = window.confirm("このプロジェクトを削除します。よろしいですか？");
+    if (!ok) {
+      return;
+    }
+    try {
+      const response = await invoke<ApiResponse<Project>>("delete_project", { id: selectedProjectId });
+      if (!response.success) {
+        setErrorMessage(response.message ?? "プロジェクト削除に失敗しました。");
+        return;
+      }
+      setArchivedProjectIds((prev) => prev.filter((id) => id !== selectedProjectId));
+      clearDetailSelection();
+      await loadProjects();
+    } catch {
+      setErrorMessage("プロジェクト削除に失敗しました。");
+    }
+  };
+
+  const handleArchiveFolder = () => {
+    if (!selectedFolderId) {
+      return;
+    }
+    const ok = window.confirm("このフォルダをアーカイブします。よろしいですか？");
+    if (!ok) {
+      return;
+    }
+    setArchivedFolderIds((prev) => (prev.includes(selectedFolderId) ? prev : [...prev, selectedFolderId]));
+    setSelectedFolderId("");
+    setSelectedTaskId("");
+  };
+
+  const handleUnarchiveFolder = () => {
+    if (!selectedFolderId) {
+      return;
+    }
+    setArchivedFolderIds((prev) => prev.filter((id) => id !== selectedFolderId));
+  };
+
+  const handleDeleteFolder = async () => {
+    if (!selectedFolderId) {
+      return;
+    }
+    const ok = window.confirm("このフォルダを削除します。よろしいですか？");
+    if (!ok) {
+      return;
+    }
+    try {
+      const response = await invoke<ApiResponse<Folder>>("delete_folder", { id: selectedFolderId });
+      if (!response.success) {
+        setErrorMessage(response.message ?? "フォルダ削除に失敗しました。");
+        return;
+      }
+      setArchivedFolderIds((prev) => prev.filter((id) => id !== selectedFolderId));
+      setSelectedFolderId("");
+      setSelectedTaskId("");
+      await loadFolders(selectedProjectId);
+      await loadProjectTasks(selectedProjectId);
+    } catch {
+      setErrorMessage("フォルダ削除に失敗しました。");
+    }
+  };
+
+  const handleArchiveTask = () => {
+    if (!selectedTaskId) {
+      return;
+    }
+    const ok = window.confirm("このタスクをアーカイブします。よろしいですか？");
+    if (!ok) {
+      return;
+    }
+    setArchivedTaskIds((prev) => (prev.includes(selectedTaskId) ? prev : [...prev, selectedTaskId]));
+    setSelectedTaskId("");
+    setIsEditingTask(false);
+  };
+
+  const handleUnarchiveTask = () => {
+    if (!selectedTaskId) {
+      return;
+    }
+    setArchivedTaskIds((prev) => prev.filter((id) => id !== selectedTaskId));
+  };
+
+  const handleDeleteTask = async () => {
+    if (!selectedTaskId) {
+      return;
+    }
+    const ok = window.confirm("このタスクを削除します。よろしいですか？");
+    if (!ok) {
+      return;
+    }
+    try {
+      const response = await invoke<ApiResponse<Task>>("delete_task", { id: selectedTaskId });
+      if (!response.success) {
+        setErrorMessage(response.message ?? "タスク削除に失敗しました。");
+        return;
+      }
+      setArchivedTaskIds((prev) => prev.filter((id) => id !== selectedTaskId));
+      setSelectedTaskId("");
+      setIsEditingTask(false);
+      if (selectedFolderId) {
+        await loadTasksByFolder(selectedFolderId);
+      }
+      await loadProjectTasks(selectedProjectId);
+    } catch {
+      setErrorMessage("タスク削除に失敗しました。");
     }
   };
 
@@ -713,6 +1466,56 @@ function App() {
       await loadWeeklyGoals(weekStartYmd);
     } catch {
       setErrorMessage("週目標の作成に失敗しました。");
+    }
+  };
+
+  const startEditingWeeklyGoal = (goal: WeeklyGoal) => {
+    setEditingWeeklyGoalId(goal.id);
+    setEditingWeeklyGoalTarget(goal.target_hours);
+  };
+
+  const handleUpdateWeeklyGoal = async (goal: WeeklyGoal) => {
+    if (!editingWeeklyGoalId) {
+      return;
+    }
+    if (editingWeeklyGoalTarget <= 0) {
+      setErrorMessage("目標時間は1時間以上で入力してください。");
+      return;
+    }
+    try {
+      const response = await invoke<ApiResponse<WeeklyGoal>>("update_weekly_goal", {
+        id: goal.id,
+        targetHours: editingWeeklyGoalTarget,
+        actualHours: goal.actual_hours,
+      });
+      if (!response.success) {
+        setErrorMessage(response.message ?? "週目標の更新に失敗しました。");
+        return;
+      }
+      setEditingWeeklyGoalId("");
+      await loadWeeklyGoals(weekStartYmd);
+    } catch {
+      setErrorMessage("週目標の更新に失敗しました。");
+    }
+  };
+
+  const handleDeleteWeeklyGoal = async (goalId: string) => {
+    const ok = window.confirm("この週目標を削除します。よろしいですか？");
+    if (!ok) {
+      return;
+    }
+    try {
+      const response = await invoke<ApiResponse<WeeklyGoal>>("delete_weekly_goal", { id: goalId });
+      if (!response.success) {
+        setErrorMessage(response.message ?? "週目標の削除に失敗しました。");
+        return;
+      }
+      if (editingWeeklyGoalId === goalId) {
+        setEditingWeeklyGoalId("");
+      }
+      await loadWeeklyGoals(weekStartYmd);
+    } catch {
+      setErrorMessage("週目標の削除に失敗しました。");
     }
   };
 
@@ -803,8 +1606,13 @@ function App() {
     } finally {
       setActiveTimerSessionId("");
       timerCompletingRef.current = false;
+      await loadRecentTaskSessions(selectedTaskId);
+      if (activeView === "calendar") {
+        await loadCalendarActualForMonth(currentMonth);
+      }
       if (activeView === "weekly") {
         await loadWeeklyGoals(weekStartYmd);
+        await loadWeeklyActualForRange();
       }
       if (closeOnDone) {
         closeTimerModal();
@@ -914,7 +1722,27 @@ function App() {
   const renderProjectsView = () => (
     <section className={hasDetailSelected ? "project-explorer-layout has-detail" : "project-explorer-layout"}>
       <article className="panel explorer-tree-panel">
-        <h2>プロジェクト構造</h2>
+        <div className="panel-head-row">
+          <h2>プロジェクト構造</h2>
+          <div className="panel-head-actions">
+            <label className="toggle-inline">
+              <input
+                type="checkbox"
+                checked={isTreeReorderMode}
+                onChange={(e) => setIsTreeReorderMode(e.target.checked)}
+              />
+              並び替えモード
+            </label>
+            <label className="toggle-inline">
+              <input
+                type="checkbox"
+                checked={showArchivedEntities}
+                onChange={(e) => setShowArchivedEntities(e.target.checked)}
+              />
+              アーカイブ表示
+            </label>
+          </div>
+        </div>
         <div className="inline-form compact-form">
           <input
             placeholder="新規プロジェクト名"
@@ -927,12 +1755,12 @@ function App() {
           </button>
         </div>
         <ul className="explorer-tree">
-          {projects.map((project) => {
+          {orderedVisibleProjects.map((project) => {
             const projectExpanded = expandedProjects[project.id] ?? project.id === selectedProjectId;
-            const projectFolderRoots = project.id === selectedProjectId ? rootFolders : [];
+            const projectFolderRoots = project.id === selectedProjectId ? getChildFolders(project.id, null) : [];
 
             const renderFolderNode = (folder: Folder, depth: number): React.ReactNode => {
-              const childFolders = getChildFolders(folder.id);
+              const childFolders = getChildFolders(folder.project_id, folder.id);
               const folderTasks = getTasksForFolder(folder.id);
               const folderExpanded = expandedFolders[folder.id] ?? folder.id === selectedFolderId;
 
@@ -950,9 +1778,20 @@ function App() {
                     <button
                       type="button"
                       className={folder.id === selectedFolderId && !selectedTaskId ? "tree-node is-active" : "tree-node"}
+                      draggable={isTreeReorderMode}
+                      onDragStart={(event) => handleFolderDragStart(event, folder)}
+                      onDragOver={(event) => {
+                        if (isTreeReorderMode) {
+                          event.preventDefault();
+                        }
+                      }}
+                      onDrop={(event) => handleFolderDrop(event, folder)}
                       onClick={() => selectFolderNode(folder.id, folder.project_id)}
                     >
-                      <span>[F] {folder.name}</span>
+                      <span className="tree-node-main">
+                        <span className="folder-icon" style={{ color: folder.color }} aria-hidden="true" />
+                        {folder.name}
+                      </span>
                       <small>{folderTasks.length}件</small>
                     </button>
                   </div>
@@ -999,6 +1838,14 @@ function App() {
                   <button
                     type="button"
                     className={project.id === selectedProjectId && !selectedFolderId && !selectedTaskId ? "tree-node is-active" : "tree-node"}
+                    draggable={isTreeReorderMode}
+                    onDragStart={(event) => handleProjectDragStart(event, project.id)}
+                    onDragOver={(event) => {
+                      if (isTreeReorderMode) {
+                        event.preventDefault();
+                      }
+                    }}
+                    onDrop={(event) => handleProjectDrop(event, project.id)}
                     onClick={() => selectProjectNode(project.id)}
                   >
                     <span>
@@ -1050,6 +1897,21 @@ function App() {
                 <p>
                   <strong>詳細:</strong> {selectedProject.details || "-"}
                 </p>
+                <div className="entity-actions">
+                  {!archivedProjectSet.has(selectedProject.id) && (
+                    <button type="button" className="btn-archive" onClick={handleArchiveProject}>
+                      アーカイブ
+                    </button>
+                  )}
+                  {archivedProjectSet.has(selectedProject.id) && (
+                    <button type="button" className="btn-archive" onClick={handleUnarchiveProject}>
+                      アーカイブ解除
+                    </button>
+                  )}
+                  <button type="button" className="btn-danger" onClick={() => { void handleDeleteProject(); }}>
+                    削除
+                  </button>
+                </div>
               </div>
             ) : (
               <div className="task-form-grid">
@@ -1083,21 +1945,40 @@ function App() {
             </div>
 
             {projectCreateKind === "folder" && (
-              <div className="inline-form">
+              <div className="task-form-grid">
                 <input
-                  placeholder="このプロジェクトに新規フォルダ"
+                  placeholder="フォルダ名"
                   value={newFolderName}
                   onChange={(event) => setNewFolderName(event.target.value)}
                 />
+                <label className="color-input">
+                  色
+                  <input
+                    type="color"
+                    value={newFolderColor}
+                    onChange={(event) => setNewFolderColor(event.target.value)}
+                  />
+                </label>
+                <textarea
+                  placeholder="概要（140文字以内）"
+                  maxLength={140}
+                  value={newFolderDescription}
+                  onChange={(event) => setNewFolderDescription(event.target.value)}
+                />
+                <textarea
+                  placeholder="詳細（文字数制限なし）"
+                  value={newFolderDetails}
+                  onChange={(event) => setNewFolderDetails(event.target.value)}
+                />
                 <select value={newFolderParentId} onChange={(event) => setNewFolderParentId(event.target.value)}>
-                  <option value="">ルート</option>
-                  {folders.map((folder) => (
+                  <option value="">ルート（プロジェクト直下）</option>
+                  {visibleFolders.map((folder) => (
                     <option key={folder.id} value={folder.id}>
                       {folder.name}
                     </option>
                   ))}
                 </select>
-                <button type="button" onClick={handleCreateFolder}>
+                <button type="button" className="btn-main" onClick={handleCreateFolder}>
                   フォルダ追加
                 </button>
               </div>
@@ -1107,7 +1988,7 @@ function App() {
               <div className="task-form-grid">
                 <select value={projectTaskFolderId} onChange={(event) => setProjectTaskFolderId(event.target.value)}>
                   <option value="">保存先フォルダを選択</option>
-                  {folders.map((folder) => (
+                  {visibleFolders.map((folder) => (
                     <option key={folder.id} value={folder.id}>
                       {folder.name}
                     </option>
@@ -1151,7 +2032,7 @@ function App() {
                 >
                   タスク追加
                 </button>
-                {folders.length === 0 && <p className="empty-note">先にフォルダを作成してください。</p>}
+                {visibleFolders.length === 0 && <p className="empty-note">先にフォルダを作成してください。</p>}
               </div>
             )}
           </div>
@@ -1160,13 +2041,35 @@ function App() {
         {selectedFolder && !selectedTask && (
           <div className="detail-stack">
             <div className="task-detail">
-              <h3>{selectedFolder.name}</h3>
+              <h3>
+                <span className="color-dot" style={{ backgroundColor: selectedFolder.color }} />
+                {selectedFolder.name}
+              </h3>
+              {selectedFolder.description && <p>{selectedFolder.description}</p>}
               <p>
                 <strong>所属プロジェクト:</strong> {selectedProject?.name ?? "-"}
               </p>
               <p>
                 <strong>タスク数:</strong> {selectedFolderTasks.length}
               </p>
+              {selectedFolder.details && (
+                <p style={{ whiteSpace: "pre-wrap" }}>{selectedFolder.details}</p>
+              )}
+              <div className="entity-actions">
+                {!archivedFolderSet.has(selectedFolder.id) && (
+                  <button type="button" className="btn-archive" onClick={handleArchiveFolder}>
+                    アーカイブ
+                  </button>
+                )}
+                {archivedFolderSet.has(selectedFolder.id) && (
+                  <button type="button" className="btn-archive" onClick={handleUnarchiveFolder}>
+                    アーカイブ解除
+                  </button>
+                )}
+                <button type="button" className="btn-danger" onClick={() => { void handleDeleteFolder(); }}>
+                  削除
+                </button>
+              </div>
             </div>
 
             <div className="task-form-grid">
@@ -1236,38 +2139,112 @@ function App() {
         {selectedTask && (
           <div className="detail-stack">
             <div className="task-detail">
-              <h3>{selectedTask.name}</h3>
-              <p>
-                <strong>プロジェクト名:</strong> {selectedProject?.name ?? "-"}
-              </p>
-              <p>
-                <strong>フォルダ名:</strong> {selectedFolder?.name ?? "-"}
-              </p>
-              <p>
-                <strong>色:</strong> <span className="color-dot" style={{ backgroundColor: selectedTask.color }} /> {selectedTask.color}
-              </p>
-              <p>
-                <strong>概要:</strong> {selectedTask.overview || "-"}
-              </p>
-              <p>
-                <strong>詳細:</strong> {selectedTask.details || "-"}
-              </p>
-              <div>
-                <strong>関連リンク:</strong>
-                <ul className="link-list">
-                  {formatLinks(selectedTask.related_links).map((link, index) => (
-                    <li key={`${selectedTask.id}-link-${index}`}>
-                      <a href={link.url} target="_blank" rel="noreferrer">
-                        {link.display_name}
-                      </a>
-                    </li>
-                  ))}
-                  {formatLinks(selectedTask.related_links).length === 0 && <li>-</li>}
-                </ul>
-              </div>
-              <button type="button" className="btn-main" onClick={() => setTimerTargetTask(selectedTask)}>
-                タイマー開始
-              </button>
+              {!isEditingTask ? (
+                <>
+                  <div className="detail-view-head">
+                    <h3>{selectedTask.name}</h3>
+                    <button type="button" className="btn-edit" onClick={() => startEditingTask(selectedTask)}>
+                      編集
+                    </button>
+                  </div>
+                  <p>
+                    <strong>プロジェクト名:</strong> {selectedProject?.name ?? "-"}
+                  </p>
+                  <p>
+                    <strong>フォルダ名:</strong> {selectedFolder?.name ?? "-"}
+                  </p>
+                  <p>
+                    <strong>色:</strong> <span className="color-dot" style={{ backgroundColor: selectedTask.color }} /> {selectedTask.color}
+                  </p>
+                  <p>
+                    <strong>概要:</strong> {selectedTask.overview || "-"}
+                  </p>
+                  <p>
+                    <strong>詳細:</strong> {selectedTask.details || "-"}
+                  </p>
+                  <div>
+                    <strong>関連リンク:</strong>
+                    <ul className="link-list">
+                      {formatLinks(selectedTask.related_links).map((link, index) => (
+                        <li key={`${selectedTask.id}-link-${index}`}>
+                          <a href={link.url} target="_blank" rel="noreferrer">
+                            {link.display_name}
+                          </a>
+                        </li>
+                      ))}
+                      {formatLinks(selectedTask.related_links).length === 0 && <li>-</li>}
+                    </ul>
+                  </div>
+                  <button type="button" className="btn-main" onClick={() => setTimerTargetTask(selectedTask)}>
+                    タイマー開始
+                  </button>
+
+                  <div className="entity-actions">
+                    {!archivedTaskSet.has(selectedTask.id) && (
+                      <button type="button" className="btn-archive" onClick={handleArchiveTask}>
+                        アーカイブ
+                      </button>
+                    )}
+                    {archivedTaskSet.has(selectedTask.id) && (
+                      <button type="button" className="btn-archive" onClick={handleUnarchiveTask}>
+                        アーカイブ解除
+                      </button>
+                    )}
+                    <button type="button" className="btn-danger" onClick={() => { void handleDeleteTask(); }}>
+                      削除
+                    </button>
+                  </div>
+
+                  <div className="task-session-block">
+                    <strong>直近の記録</strong>
+                    <ul className="task-session-list">
+                      {taskRecentSessions.map((session) => (
+                        <li key={session.id}>
+                          <span>{ymdToLabel(session.date)} {unixToHm(session.start_time)} - {session.end_time ? unixToHm(session.end_time) : "--:--"}</span>
+                          <strong>{secondsToMinutesLabel(getSessionDurationSeconds(session))}</strong>
+                        </li>
+                      ))}
+                      {taskRecentSessions.length === 0 && <li>記録はまだありません。</li>}
+                    </ul>
+                  </div>
+                </>
+              ) : (
+                <div className="task-form-grid">
+                  <label className="form-label">タスク名
+                    <input value={editTaskName} onChange={(e) => setEditTaskName(e.target.value)} />
+                  </label>
+                  <label className="color-input">色
+                    <input type="color" value={editTaskColor} onChange={(e) => setEditTaskColor(e.target.value)} />
+                  </label>
+                  <label className="form-label">概要（140文字以内）
+                    <input maxLength={140} value={editTaskOverview} onChange={(e) => setEditTaskOverview(e.target.value)} />
+                  </label>
+                  <label className="form-label">詳細
+                    <textarea value={editTaskDetails} onChange={(e) => setEditTaskDetails(e.target.value)} />
+                  </label>
+                  <div className="links-block">
+                    <p>関連リンク（最大4件）</p>
+                    {editTaskLinks.map((link, index) => (
+                      <div className="link-row" key={`edit-link-${index}`}>
+                        <input
+                          placeholder="表示名"
+                          value={link.label}
+                          onChange={(event) => handleEditTaskLinkChange(index, "label", event.target.value)}
+                        />
+                        <input
+                          placeholder="URL または パス"
+                          value={link.url}
+                          onChange={(event) => handleEditTaskLinkChange(index, "url", event.target.value)}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  <div className="edit-actions">
+                    <button type="button" onClick={() => setIsEditingTask(false)}>キャンセル</button>
+                    <button type="button" className="btn-main" onClick={handleUpdateTask}>保存</button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
@@ -1278,7 +2255,7 @@ function App() {
   );
 
   const renderCalendarView = () => (
-    <section className="calendar-wrap">
+    <section className={selectedScheduleDetail?.source === "calendar" ? "calendar-wrap has-detail" : "calendar-wrap"}>
       <article className="panel calendar-panel" ref={calendarPanelRef}>
         <div className="calendar-head">
           <div className="calendar-head-main">
@@ -1348,32 +2325,156 @@ function App() {
           ))}
           {monthMatrix.flat().map((date) => {
             const ymd = dateToYmdNumber(date);
-            const dayEvents = calendarEvents.filter((ev) => ev.date === ymd);
+            const dayEvents = calendarEvents
+              .filter((ev) => ev.date === ymd)
+              .sort((a, b) => a.start_minute - b.start_minute);
+            const dayActualSeconds = calendarActualByDate[ymd] ?? 0;
             const inCurrentMonth = date.getMonth() === currentMonth.getMonth();
             return (
-              <div key={ymd} className={inCurrentMonth ? "calendar-cell" : "calendar-cell is-outside"}>
+              <div
+                key={ymd}
+                className={inCurrentMonth ? (dayEvents.length > 0 ? "calendar-cell is-clickable" : "calendar-cell") : "calendar-cell is-outside"}
+                onClick={() => {
+                  if (dayEvents.length === 0) {
+                    return;
+                  }
+                  setSelectedScheduleDetail({ kind: "event", source: "calendar", event: dayEvents[0] });
+                }}
+              >
                 <div className="calendar-day">{date.getDate()}</div>
+                {dayActualSeconds > 0 && <p className="calendar-actual">実績 {secondsToHoursLabel(dayActualSeconds)}</p>}
                 <ul className="calendar-events-list">
                   {dayEvents.slice(0, 3).map((ev) => (
-                    <li key={ev.id} title={ev.note || ""}>
-                      {minuteToLabel(ev.start_minute)} - {ev.title}
+                    <li key={ev.id}>
+                      <button
+                        type="button"
+                        title={ev.note || ""}
+                        className={selectedScheduleDetail?.kind === "event" && selectedScheduleDetail.event.id === ev.id ? "calendar-event-button is-selected" : "calendar-event-button"}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedScheduleDetail({ kind: "event", source: "calendar", event: ev });
+                        }}
+                      >
+                        {minuteToLabel(ev.start_minute)} - {ev.title}
+                      </button>
                     </li>
                   ))}
-                  {dayEvents.length > 3 && <li>+{dayEvents.length - 3}件</li>}
+                  {dayEvents.length > 3 && (
+                    <li>
+                      <button
+                        type="button"
+                        className="calendar-event-button calendar-event-more"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          setSelectedScheduleDetail({ kind: "event", source: "calendar", event: dayEvents[3] });
+                        }}
+                      >
+                        +{dayEvents.length - 3}件
+                      </button>
+                    </li>
+                  )}
                 </ul>
               </div>
             );
           })}
         </div>
       </article>
+
+      {selectedScheduleDetail?.source === "calendar" && (
+        <article className="panel schedule-detail-panel">
+          {renderScheduleInspector()}
+        </article>
+      )}
     </section>
   );
+
+  const renderScheduleInspectorEmpty = (message: string) => (
+    <div className="schedule-detail-empty">
+      <h3>詳細</h3>
+      <p>{message}</p>
+    </div>
+  );
+
+  const renderScheduleInspector = () => {
+    if (!selectedScheduleDetail) {
+      return renderScheduleInspectorEmpty("イベントまたは記録を選択してください。");
+    }
+
+    const isEvent = selectedScheduleDetail.kind === "event";
+    const label = isEvent ? "予定" : "成果記録";
+    const taskName = selectedScheduleTask?.name ?? (isEvent ? (selectedScheduleDetail.event.task_id ? "読み込み中または未取得" : "タスク未指定") : "関連タスク");
+
+    return (
+      <div className="schedule-detail-card">
+        <div className="detail-panel-head">
+          <div>
+            <h2>{label}の詳細</h2>
+            <p className="schedule-detail-meta">{selectedScheduleDetail.source === "calendar" ? "月間カレンダー" : "週間タイムライン"}</p>
+          </div>
+          <button type="button" className="detail-panel-close" onClick={() => setSelectedScheduleDetail(null)}>
+            閉じる
+          </button>
+        </div>
+
+        {isEvent ? (
+          <div className="schedule-detail-body">
+            <span className="schedule-detail-badge is-plan">予定</span>
+            <h3>{selectedScheduleDetail.event.title}</h3>
+            <dl className="schedule-detail-list">
+              <div>
+                <dt>日付</dt>
+                <dd>{ymdToLabel(selectedScheduleDetail.event.date)}</dd>
+              </div>
+              <div>
+                <dt>時間</dt>
+                <dd>{minuteToLabel(selectedScheduleDetail.event.start_minute)} - {minuteToLabel(selectedScheduleDetail.event.end_minute)}</dd>
+              </div>
+              <div>
+                <dt>タスク</dt>
+                <dd>{taskName}</dd>
+              </div>
+              <div>
+                <dt>メモ</dt>
+                <dd>{selectedScheduleDetail.event.note || "-"}</dd>
+              </div>
+            </dl>
+          </div>
+        ) : (
+          <div className="schedule-detail-body">
+            <span className="schedule-detail-badge is-record">成果記録</span>
+            <h3>{selectedScheduleTask?.name ?? "作業記録"}</h3>
+            <dl className="schedule-detail-list">
+              <div>
+                <dt>日付</dt>
+                <dd>{ymdToLabel(selectedScheduleDetail.session.date)}</dd>
+              </div>
+              <div>
+                <dt>時間</dt>
+                <dd>{unixToHm(selectedScheduleDetail.session.start_time)} - {selectedScheduleDetail.session.end_time ? unixToHm(selectedScheduleDetail.session.end_time) : "--:--"}</dd>
+              </div>
+              <div>
+                <dt>実績</dt>
+                <dd>{secondsToMinutesLabel(getSessionDurationSeconds(selectedScheduleDetail.session))}</dd>
+              </div>
+              <div>
+                <dt>タスク</dt>
+                <dd>{selectedScheduleTask?.name ?? selectedScheduleDetail.session.task_id}</dd>
+              </div>
+            </dl>
+          </div>
+        )}
+      </div>
+    );
+  };
 
   const renderWeeklyView = () => (
     <section className="weekly-wrap">
       <article className="panel weekly-panel">
         <div className="calendar-head">
-          <h2>週予定・週目標</h2>
+          <div>
+            <h2>週予定・週目標</h2>
+            <p className="weekly-actual-summary">今週実績: {secondsToHoursLabel(weeklyActualTotalSeconds)}</p>
+          </div>
           <div className="calendar-month-nav">
             <button type="button" onClick={() => setWeeklyBaseDate(new Date(weeklyBaseDate.getFullYear(), weeklyBaseDate.getMonth(), weeklyBaseDate.getDate() - 7))}>
               前週
@@ -1387,19 +2488,112 @@ function App() {
           </div>
         </div>
 
-        <div className="weekly-grid">
-          {weekDays.map((d) => (
-            <div key={dateToYmdNumber(d)} className="weekly-day-card">
-              <p className={d.getDay() === 6 ? "weekly-day-title is-sat" : d.getDay() === 0 ? "weekly-day-title is-sun" : "weekly-day-title"}>
-                {d.getMonth() + 1}/{d.getDate()} ({["日", "月", "火", "水", "木", "金", "土"][d.getDay()]})
-              </p>
-              <p className="weekly-day-note">計画・実行はタスク単位で管理</p>
+        <div className="weekly-goal-strip">
+          <strong>今週の目標</strong>
+          <div className="weekly-goal-strip-list">
+            {weeklyGoals.map((goal) => {
+              const project = projects.find((item) => item.id === goal.project_id);
+              const task = projectTasks.find((item) => item.id === goal.task_id);
+              return (
+                <span key={goal.id} className={goal.task_id ? "weekly-goal-chip is-task" : "weekly-goal-chip is-project"}>
+                  {task?.name ?? project?.name ?? "未分類"} {goal.target_hours}h
+                </span>
+              );
+            })}
+            {weeklyGoals.length === 0 && <span className="weekly-goal-strip-empty">週目標なし</span>}
+          </div>
+        </div>
+
+        <div className="weekly-board-scroll">
+          <div className="weekly-board weekly-board-timeline">
+            <div className="weekly-corner-cell">時間軸</div>
+            {weekDays.map((d) => {
+              const ymd = dateToYmdNumber(d);
+              const dayActualSeconds = weeklyActualByDate[ymd] ?? 0;
+              return (
+                <div key={`head-${ymd}`} className="weekly-day-head-cell">
+                  <p className={d.getDay() === 6 ? "weekly-day-title is-sat" : d.getDay() === 0 ? "weekly-day-title is-sun" : "weekly-day-title"}>
+                    {d.getMonth() + 1}/{d.getDate()} ({["日", "月", "火", "水", "木", "金", "土"][d.getDay()]})
+                  </p>
+                  <div className="weekly-day-head-meta">
+                    <span className="weekly-day-badge is-actual">実績 {secondsToHoursLabel(dayActualSeconds)}</span>
+                    <span className="weekly-day-badge is-plan">予定 {(weeklyCalendarEvents.filter((event) => event.date === ymd)).length}件</span>
+                  </div>
+                </div>
+              );
+            })}
+
+            <div className="weekly-time-column">
+              {Array.from({ length: 16 }, (_, index) => 7 + index).map((hour) => (
+                <div key={`hour-${hour}`} className="weekly-time-label">
+                  {pad2(hour)}:00
+                </div>
+              ))}
             </div>
-          ))}
+
+            {weekDays.map((d) => {
+              const ymd = dateToYmdNumber(d);
+              const dayEvents = weeklyCalendarEvents
+                .filter((event) => event.date === ymd)
+                .sort((a, b) => a.start_minute - b.start_minute);
+              const daySessions = (weeklySessionsByDate[ymd] ?? []).sort((a, b) => a.start_time - b.start_time);
+
+              return (
+                <div key={ymd} className="weekly-day-column">
+                  <div className="weekly-day-timeline-grid">
+                    {Array.from({ length: 16 }, (_, index) => (
+                      <div key={`${ymd}-line-${index}`} className="weekly-hour-line" />
+                    ))}
+                  </div>
+
+                  {dayEvents.map((event) => (
+                    <button
+                      type="button"
+                      key={event.id}
+                      className={selectedScheduleDetail?.kind === "event" && selectedScheduleDetail.event.id === event.id ? "weekly-timeline-item is-plan is-selected" : "weekly-timeline-item is-plan"}
+                      style={getTimelineBlockStyle(event.start_minute, event.end_minute, 7 * 60, 23 * 60)}
+                      title={`${minuteToLabel(event.start_minute)} - ${minuteToLabel(event.end_minute)} ${event.title}`}
+                      onClick={() => setSelectedScheduleDetail({ kind: "event", source: "weekly", event })}
+                    >
+                      <span className="weekly-timeline-time">{minuteToLabel(event.start_minute)} - {minuteToLabel(event.end_minute)}</span>
+                      <strong>{event.title}</strong>
+                    </button>
+                  ))}
+
+                  {daySessions.map((session) => {
+                    const startMinute = unixToMinuteOfDay(session.start_time);
+                    const endMinute = session.end_time
+                      ? unixToMinuteOfDay(session.end_time)
+                      : startMinute + Math.round(getSessionDurationSeconds(session) / 60);
+
+                    return (
+                      <button
+                        type="button"
+                        key={session.id}
+                        className={selectedScheduleDetail?.kind === "session" && selectedScheduleDetail.session.id === session.id ? "weekly-timeline-item is-record is-selected" : "weekly-timeline-item is-record"}
+                        style={getTimelineBlockStyle(startMinute, endMinute, 7 * 60, 23 * 60)}
+                        title={`${unixToHm(session.start_time)} - ${session.end_time ? unixToHm(session.end_time) : "--:--"}`}
+                        onClick={() => setSelectedScheduleDetail({ kind: "session", source: "weekly", session })}
+                      >
+                        <span className="weekly-timeline-time">
+                          {unixToHm(session.start_time)} - {session.end_time ? unixToHm(session.end_time) : "--:--"}
+                        </span>
+                        <strong>{secondsToMinutesLabel(getSessionDurationSeconds(session))}</strong>
+                      </button>
+                    );
+                  })}
+
+                  {dayEvents.length === 0 && daySessions.length === 0 && <p className="weekly-day-empty">予定も記録もありません</p>}
+                </div>
+              );
+            })}
+          </div>
         </div>
       </article>
 
       <article className="panel weekly-form-panel">
+        {selectedScheduleDetail?.source === "weekly" && renderScheduleInspector()}
+
         <h2>週目標追加</h2>
         <div className="task-form-grid">
           <select value={weeklyGoalType} onChange={(e) => setWeeklyGoalType(e.target.value as "project" | "task")}>
@@ -1409,7 +2603,7 @@ function App() {
 
           <select value={weeklyProjectId} onChange={(e) => setWeeklyProjectId(e.target.value)}>
             <option value="">プロジェクト選択</option>
-            {projects.map((project) => (
+            {visibleProjects.map((project) => (
               <option key={project.id} value={project.id}>
                 {project.name}
               </option>
@@ -1419,7 +2613,7 @@ function App() {
           {weeklyGoalType === "task" && (
             <select value={weeklyTaskId} onChange={(e) => setWeeklyTaskId(e.target.value)}>
               <option value="">タスク選択</option>
-              {projectTasks.map((task) => (
+              {visibleProjectTasks.map((task) => (
                 <option key={task.id} value={task.id}>
                   {task.name}
                 </option>
@@ -1427,13 +2621,16 @@ function App() {
             </select>
           )}
 
-          <input
-            type="number"
-            min={1}
-            step={0.5}
-            value={weeklyTargetHours}
-            onChange={(e) => setWeeklyTargetHours(Number(e.target.value) || 1)}
-          />
+          <label className="form-label">
+            目標時間（h）
+            <input
+              type="number"
+              min={1}
+              step={0.5}
+              value={weeklyTargetHours}
+              onChange={(e) => setWeeklyTargetHours(Number(e.target.value) || 1)}
+            />
+          </label>
 
           <button type="button" className="btn-main" onClick={handleCreateWeeklyGoal}>
             週目標を追加
@@ -1449,15 +2646,49 @@ function App() {
               <li key={goal.id}>
                 <div>
                   <strong>{task?.name ?? project?.name ?? "未分類"}</strong>
-                  <p>
-                    目標 {goal.target_hours}h / 実績 {goal.actual_hours}h
-                  </p>
+                  {editingWeeklyGoalId === goal.id ? (
+                    <div className="weekly-goal-editor">
+                      <label>
+                        目標
+                        <input
+                          type="number"
+                          min={1}
+                          step={0.5}
+                          value={editingWeeklyGoalTarget}
+                          onChange={(e) => setEditingWeeklyGoalTarget(Number(e.target.value) || 1)}
+                        />
+                      </label>
+                      <p>実績 {goal.actual_hours}h</p>
+                    </div>
+                  ) : (
+                    <p>
+                      目標 {goal.target_hours}h / 実績 {goal.actual_hours}h
+                    </p>
+                  )}
                 </div>
-                {task && (
-                  <button type="button" onClick={() => setTimerTargetTask(task)}>
-                    タイマー開始
+                <div className="weekly-goal-actions">
+                  {task && (
+                    <button type="button" onClick={() => setTimerTargetTask(task)}>
+                      タイマー開始
+                    </button>
+                  )}
+                  {editingWeeklyGoalId !== goal.id && (
+                    <button type="button" onClick={() => startEditingWeeklyGoal(goal)}>
+                      編集
+                    </button>
+                  )}
+                  {editingWeeklyGoalId === goal.id && (
+                    <button type="button" onClick={() => { void handleUpdateWeeklyGoal(goal); }}>
+                      保存
+                    </button>
+                  )}
+                  {editingWeeklyGoalId === goal.id && (
+                    <button type="button" onClick={() => setEditingWeeklyGoalId("")}>キャンセル</button>
+                  )}
+                  <button type="button" className="btn-danger" onClick={() => { void handleDeleteWeeklyGoal(goal.id); }}>
+                    削除
                   </button>
-                )}
+                </div>
               </li>
             );
           })}

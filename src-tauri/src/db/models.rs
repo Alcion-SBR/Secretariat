@@ -33,18 +33,31 @@ pub struct Folder {
     pub project_id: String,
     pub parent_folder_id: Option<String>,
     pub name: String,
+    pub color: String,
+    pub description: Option<String>,
+    pub details: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
 impl Folder {
-    pub fn new(project_id: String, name: String, parent_folder_id: Option<String>) -> Self {
+    pub fn new(
+        project_id: String,
+        name: String,
+        color: String,
+        parent_folder_id: Option<String>,
+        description: Option<String>,
+        details: Option<String>,
+    ) -> Self {
         let now = chrono::Utc::now().timestamp();
         Self {
             id: Uuid::new_v4().to_string(),
             project_id,
             parent_folder_id,
             name,
+            color,
+            description,
+            details,
             created_at: now,
             updated_at: now,
         }

@@ -85,13 +85,16 @@ pub fn delete_project(conn: &Connection, id: &str) -> SqlResult<()> {
 
 pub fn create_folder(conn: &Connection, folder: &Folder) -> SqlResult<()> {
     conn.execute(
-        "INSERT INTO folders (id, project_id, parent_folder_id, name, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        "INSERT INTO folders (id, project_id, parent_folder_id, name, color, description, details, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
         params![
             folder.id,
             folder.project_id,
             folder.parent_folder_id,
             folder.name,
+            folder.color,
+            folder.description,
+            folder.details,
             folder.created_at,
             folder.updated_at
         ],
@@ -101,7 +104,7 @@ pub fn create_folder(conn: &Connection, folder: &Folder) -> SqlResult<()> {
 
 pub fn get_folder(conn: &Connection, id: &str) -> SqlResult<Option<Folder>> {
     let mut stmt = conn.prepare(
-        "SELECT id, project_id, parent_folder_id, name, created_at, updated_at FROM folders WHERE id = ?1",
+        "SELECT id, project_id, parent_folder_id, name, color, description, details, created_at, updated_at FROM folders WHERE id = ?1",
     )?;
 
     let folder = stmt.query_row(params![id], |row| {
@@ -110,8 +113,11 @@ pub fn get_folder(conn: &Connection, id: &str) -> SqlResult<Option<Folder>> {
             project_id: row.get(1)?,
             parent_folder_id: row.get(2)?,
             name: row.get(3)?,
-            created_at: row.get(4)?,
-            updated_at: row.get(5)?,
+            color: row.get(4)?,
+            description: row.get(5)?,
+            details: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
         })
     }).optional()?;
 
@@ -120,7 +126,7 @@ pub fn get_folder(conn: &Connection, id: &str) -> SqlResult<Option<Folder>> {
 
 pub fn list_folders_by_project(conn: &Connection, project_id: &str) -> SqlResult<Vec<Folder>> {
     let mut stmt = conn.prepare(
-        "SELECT id, project_id, parent_folder_id, name, created_at, updated_at FROM folders WHERE project_id = ?1 ORDER BY created_at ASC",
+        "SELECT id, project_id, parent_folder_id, name, color, description, details, created_at, updated_at FROM folders WHERE project_id = ?1 ORDER BY created_at ASC",
     )?;
 
     let folders = stmt.query_map(params![project_id], |row| {
@@ -129,8 +135,11 @@ pub fn list_folders_by_project(conn: &Connection, project_id: &str) -> SqlResult
             project_id: row.get(1)?,
             parent_folder_id: row.get(2)?,
             name: row.get(3)?,
-            created_at: row.get(4)?,
-            updated_at: row.get(5)?,
+            color: row.get(4)?,
+            description: row.get(5)?,
+            details: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
         })
     })?
     .collect::<SqlResult<Vec<_>>>()?;
@@ -140,7 +149,7 @@ pub fn list_folders_by_project(conn: &Connection, project_id: &str) -> SqlResult
 
 pub fn list_child_folders(conn: &Connection, parent_id: &str) -> SqlResult<Vec<Folder>> {
     let mut stmt = conn.prepare(
-        "SELECT id, project_id, parent_folder_id, name, created_at, updated_at FROM folders WHERE parent_folder_id = ?1 ORDER BY created_at ASC",
+        "SELECT id, project_id, parent_folder_id, name, color, description, details, created_at, updated_at FROM folders WHERE parent_folder_id = ?1 ORDER BY created_at ASC",
     )?;
 
     let folders = stmt.query_map(params![parent_id], |row| {
@@ -149,8 +158,11 @@ pub fn list_child_folders(conn: &Connection, parent_id: &str) -> SqlResult<Vec<F
             project_id: row.get(1)?,
             parent_folder_id: row.get(2)?,
             name: row.get(3)?,
-            created_at: row.get(4)?,
-            updated_at: row.get(5)?,
+            color: row.get(4)?,
+            description: row.get(5)?,
+            details: row.get(6)?,
+            created_at: row.get(7)?,
+            updated_at: row.get(8)?,
         })
     })?
     .collect::<SqlResult<Vec<_>>>()?;
@@ -160,9 +172,12 @@ pub fn list_child_folders(conn: &Connection, parent_id: &str) -> SqlResult<Vec<F
 
 pub fn update_folder(conn: &Connection, folder: &Folder) -> SqlResult<()> {
     conn.execute(
-        "UPDATE folders SET name = ?1, parent_folder_id = ?2, updated_at = ?3 WHERE id = ?4",
+        "UPDATE folders SET name = ?1, color = ?2, description = ?3, details = ?4, parent_folder_id = ?5, updated_at = ?6 WHERE id = ?7",
         params![
             folder.name,
+            folder.color,
+            folder.description,
+            folder.details,
             folder.parent_folder_id,
             folder.updated_at,
             folder.id
@@ -287,6 +302,9 @@ pub fn update_task(conn: &Connection, task: &Task) -> SqlResult<()> {
 }
 
 pub fn delete_task(conn: &Connection, id: &str) -> SqlResult<()> {
+    conn.execute("DELETE FROM timer_sessions WHERE task_id = ?1", params![id])?;
+    conn.execute("DELETE FROM calendar_events WHERE task_id = ?1", params![id])?;
+    conn.execute("DELETE FROM weekly_goals WHERE task_id = ?1", params![id])?;
     conn.execute("DELETE FROM tasks WHERE id = ?1", params![id])?;
     Ok(())
 }

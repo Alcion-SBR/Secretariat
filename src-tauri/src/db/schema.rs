@@ -22,6 +22,9 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
             project_id TEXT NOT NULL,
             parent_folder_id TEXT,
             name TEXT NOT NULL,
+            color TEXT NOT NULL DEFAULT '#2f80cc',
+            description TEXT,
+            details TEXT,
             created_at INTEGER NOT NULL,
             updated_at INTEGER NOT NULL,
             FOREIGN KEY(project_id) REFERENCES projects(id),
@@ -62,6 +65,26 @@ pub fn init_schema(conn: &Connection) -> SqlResult<()> {
             "ALTER TABLE tasks ADD COLUMN color TEXT NOT NULL DEFAULT '#2f80cc'",
             [],
         )?;
+    }
+
+    // 既存DB向けマイグレーション: folders に color/description/details を後方互換で追加
+    let mut folder_cols: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut stmt2 = conn.prepare("PRAGMA table_info(folders)")?;
+    let col_names = stmt2.query_map([], |row| row.get::<_, String>(1))?;
+    for col in col_names {
+        folder_cols.insert(col?);
+    }
+    if !folder_cols.contains("color") {
+        conn.execute(
+            "ALTER TABLE folders ADD COLUMN color TEXT NOT NULL DEFAULT '#2f80cc'",
+            [],
+        )?;
+    }
+    if !folder_cols.contains("description") {
+        conn.execute("ALTER TABLE folders ADD COLUMN description TEXT", [])?;
+    }
+    if !folder_cols.contains("details") {
+        conn.execute("ALTER TABLE folders ADD COLUMN details TEXT", [])?;
     }
 
     // WeeklyGoals テーブル

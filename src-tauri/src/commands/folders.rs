@@ -74,9 +74,12 @@ pub fn create_folder(
     app_handle: tauri::AppHandle,
     project_id: String,
     name: String,
+    color: String,
     parent_folder_id: Option<String>,
+    description: Option<String>,
+    details: Option<String>,
 ) -> FolderResponse {
-    let folder = Folder::new(project_id, name, parent_folder_id);
+    let folder = Folder::new(project_id, name, color, parent_folder_id, description, details);
 
     match Database::open(&app_handle) {
         Ok(conn) => match create_folder_query(&conn, &folder) {
@@ -104,7 +107,10 @@ pub fn update_folder(
     app_handle: tauri::AppHandle,
     id: String,
     name: String,
+    color: String,
     parent_folder_id: Option<String>,
+    description: Option<String>,
+    details: Option<String>,
 ) -> FolderResponse {
     let now = chrono::Utc::now().timestamp();
     let folder = Folder {
@@ -112,6 +118,9 @@ pub fn update_folder(
         project_id: String::new(),
         parent_folder_id,
         name,
+        color,
+        description,
+        details,
         created_at: 0,
         updated_at: now,
     };
