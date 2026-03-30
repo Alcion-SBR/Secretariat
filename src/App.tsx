@@ -130,8 +130,6 @@ type TreeDragPayload =
   | { kind: "project"; projectId: string }
   | { kind: "folder"; projectId: string; folderId: string; parentFolderId: string | null };
 
-const DRAG_MIME = "application/x-secretariat-tree-dnd";
-
 const mergeOrderedIds = (savedIds: string[], actualIds: string[]) => {
   const actualSet = new Set(actualIds);
   const kept = savedIds.filter((id) => actualSet.has(id));
@@ -150,6 +148,19 @@ const moveBefore = (ids: string[], movingId: string, targetId: string) => {
     return next;
   }
   next.splice(targetIndex, 0, movingId);
+  return next;
+};
+
+const moveAfter = (ids: string[], movingId: string, targetId: string) => {
+  if (movingId === targetId) {
+    return ids;
+  }
+  const next = ids.filter((id) => id !== movingId);
+  const targetIndex = next.indexOf(targetId);
+  if (targetIndex < 0) {
+    return next;
+  }
+  next.splice(targetIndex + 1, 0, movingId);
   return next;
 };
 
@@ -321,6 +332,7 @@ function App() {
   const [archivedTaskIds, setArchivedTaskIds] = useState<string[]>([]);
   const [projectOrderIds, setProjectOrderIds] = useState<string[]>([]);
   const [folderOrderByParent, setFolderOrderByParent] = useState<Record<string, string[]>>({});
+  const [pointerDragPayload, setPointerDragPayload] = useState<TreeDragPayload | null>(null);
   const [editingWeeklyGoalId, setEditingWeeklyGoalId] = useState<string>("");
   const [editingWeeklyGoalTarget, setEditingWeeklyGoalTarget] = useState(1);
 
@@ -966,8 +978,37 @@ function App() {
     }
   };
 
+  const ensureProjectRootFolder = async (projectId: string) => {
+    const existingRoot = visibleFolders.find(
+      (folder) => folder.project_id === projectId && !folder.parent_folder_id && folder.name === "プロジェクト直下",
+    );
+    if (existingRoot) {
+      return existingRoot.id;
+    }
+
+    const response = await invoke<ApiResponse<Folder>>("create_folder", {
+      projectId,
+      name: "プロジェクト直下",
+      color: selectedProject?.color ?? "#2f80cc",
+      parentFolderId: null,
+      description: "フォルダを指定しないタスクの保存先",
+      details: null,
+    });
+
+    if (!response.success || !response.data) {
+      setErrorMessage(response.message ?? "プロジェクト直下フォルダの作成に失敗しました。");
+      return "";
+    }
+
+    await loadFolders(projectId);
+    return response.data.id;
+  };
+
   const handleCreateTask = async (explicitFolderId?: string) => {
-    const folderId = explicitFolderId || selectedFolderId;
+    let folderId = explicitFolderId || selectedFolderId;
+    if (!folderId && selectedProjectId) {
+      folderId = await ensureProjectRootFolder(selectedProjectId);
+    }
     if (!folderId || !newTaskName.trim()) {
       return;
     }
@@ -1069,83 +1110,49 @@ function App() {
     setExpandedFolders((prev) => ({ ...prev, [folderId]: true }));
   };
 
-  const parseTreeDragPayload = (raw: string): TreeDragPayload | null => {
-    try {
-      const parsed = JSON.parse(raw) as Partial<TreeDragPayload>;
-      if (parsed.kind === "project" && typeof parsed.projectId === "string") {
-        return { kind: "project", projectId: parsed.projectId };
-      }
-      if (
-        parsed.kind === "folder" &&
-        typeof parsed.projectId === "string" &&
-        typeof parsed.folderId === "string"
-      ) {
-        return {
-          kind: "folder",
-          projectId: parsed.projectId,
-          folderId: parsed.folderId,
-          parentFolderId: typeof parsed.parentFolderId === "string" ? parsed.parentFolderId : null,
-        };
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  };
-
-  const handleProjectDragStart = (event: React.DragEvent<HTMLButtonElement>, projectId: string) => {
-    if (!isTreeReorderMode) {
-      return;
-    }
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData(DRAG_MIME, JSON.stringify({ kind: "project", projectId }));
-  };
-
-  const handleProjectDrop = (event: React.DragEvent<HTMLButtonElement>, targetProjectId: string) => {
-    if (!isTreeReorderMode) {
-      return;
-    }
-    const payload = parseTreeDragPayload(event.dataTransfer.getData(DRAG_MIME));
-    if (!payload || payload.kind !== "project" || payload.projectId === targetProjectId) {
+  const startPointerDrag = (event: React.MouseEvent<HTMLElement>, payload: TreeDragPayload) => {
+    if (!isTreeReorderMode || event.button !== 0) {
       return;
     }
     event.preventDefault();
-    setProjectOrderIds((prev) => moveBefore(mergeOrderedIds(prev, projects.map((project) => project.id)), payload.projectId, targetProjectId));
+    setPointerDragPayload(payload);
   };
 
-  const handleFolderDragStart = (event: React.DragEvent<HTMLButtonElement>, folder: Folder) => {
-    if (!isTreeReorderMode) {
+  const handleProjectPointerMove = (event: React.MouseEvent<HTMLButtonElement>, targetProjectId: string) => {
+    if (!isTreeReorderMode || !pointerDragPayload || pointerDragPayload.kind !== "project") {
       return;
     }
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData(
-      DRAG_MIME,
-      JSON.stringify({
-        kind: "folder",
-        projectId: folder.project_id,
-        folderId: folder.id,
-        parentFolderId: folder.parent_folder_id ?? null,
-      }),
-    );
+    if (pointerDragPayload.projectId === targetProjectId) {
+      return;
+    }
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const shouldInsertAfter = event.clientY >= rect.top + rect.height / 2;
+
+    setProjectOrderIds((prev) => {
+      const base = mergeOrderedIds(prev, projects.map((project) => project.id));
+      return shouldInsertAfter
+        ? moveAfter(base, pointerDragPayload.projectId, targetProjectId)
+        : moveBefore(base, pointerDragPayload.projectId, targetProjectId);
+    });
   };
 
-  const handleFolderDrop = (event: React.DragEvent<HTMLButtonElement>, targetFolder: Folder) => {
-    if (!isTreeReorderMode) {
+  const handleFolderPointerMove = (event: React.MouseEvent<HTMLButtonElement>, targetFolder: Folder) => {
+    if (!isTreeReorderMode || !pointerDragPayload || pointerDragPayload.kind !== "folder") {
       return;
     }
-    const payload = parseTreeDragPayload(event.dataTransfer.getData(DRAG_MIME));
     const targetParentFolderId = targetFolder.parent_folder_id ?? null;
     if (
-      !payload ||
-      payload.kind !== "folder" ||
-      payload.folderId === targetFolder.id ||
-      payload.projectId !== targetFolder.project_id ||
-      payload.parentFolderId !== targetParentFolderId
+      pointerDragPayload.folderId === targetFolder.id ||
+      pointerDragPayload.projectId !== targetFolder.project_id ||
+      pointerDragPayload.parentFolderId !== targetParentFolderId
     ) {
       return;
     }
 
-    event.preventDefault();
+    const rect = event.currentTarget.getBoundingClientRect();
+    const shouldInsertAfter = event.clientY >= rect.top + rect.height / 2;
+
     const key = getFolderOrderKey(targetFolder.project_id, targetParentFolderId);
     const siblingIds = visibleFolders
       .filter(
@@ -1157,9 +1164,21 @@ function App() {
 
     setFolderOrderByParent((prev) => {
       const base = mergeOrderedIds(prev[key] ?? [], siblingIds);
-      return { ...prev, [key]: moveBefore(base, payload.folderId, targetFolder.id) };
+      const next = shouldInsertAfter
+        ? moveAfter(base, pointerDragPayload.folderId, targetFolder.id)
+        : moveBefore(base, pointerDragPayload.folderId, targetFolder.id);
+      return { ...prev, [key]: next };
     });
   };
+
+  useEffect(() => {
+    if (!pointerDragPayload) {
+      return;
+    }
+    const stop = () => setPointerDragPayload(null);
+    window.addEventListener("mouseup", stop);
+    return () => window.removeEventListener("mouseup", stop);
+  }, [pointerDragPayload]);
 
   const startEditingProject = (project: Project) => {
     setEditProjectName(project.name);
@@ -1777,15 +1796,16 @@ function App() {
                     </button>
                     <button
                       type="button"
-                      className={folder.id === selectedFolderId && !selectedTaskId ? "tree-node is-active" : "tree-node"}
-                      draggable={isTreeReorderMode}
-                      onDragStart={(event) => handleFolderDragStart(event, folder)}
-                      onDragOver={(event) => {
-                        if (isTreeReorderMode) {
-                          event.preventDefault();
-                        }
-                      }}
-                      onDrop={(event) => handleFolderDrop(event, folder)}
+                      className={`${folder.id === selectedFolderId && !selectedTaskId ? "tree-node is-active" : "tree-node"}${isTreeReorderMode ? " is-reorder-enabled" : ""}${pointerDragPayload?.kind === "folder" && pointerDragPayload.folderId === folder.id ? " is-dragging" : ""}`}
+                      onMouseDown={(event) =>
+                        startPointerDrag(event, {
+                          kind: "folder",
+                          projectId: folder.project_id,
+                          folderId: folder.id,
+                          parentFolderId: folder.parent_folder_id ?? null,
+                        })
+                      }
+                      onMouseMove={(event) => handleFolderPointerMove(event, folder)}
                       onClick={() => selectFolderNode(folder.id, folder.project_id)}
                     >
                       <span className="tree-node-main">
@@ -1837,15 +1857,9 @@ function App() {
                   </button>
                   <button
                     type="button"
-                    className={project.id === selectedProjectId && !selectedFolderId && !selectedTaskId ? "tree-node is-active" : "tree-node"}
-                    draggable={isTreeReorderMode}
-                    onDragStart={(event) => handleProjectDragStart(event, project.id)}
-                    onDragOver={(event) => {
-                      if (isTreeReorderMode) {
-                        event.preventDefault();
-                      }
-                    }}
-                    onDrop={(event) => handleProjectDrop(event, project.id)}
+                    className={`${project.id === selectedProjectId && !selectedFolderId && !selectedTaskId ? "tree-node is-active" : "tree-node"}${isTreeReorderMode ? " is-reorder-enabled" : ""}${pointerDragPayload?.kind === "project" && pointerDragPayload.projectId === project.id ? " is-dragging" : ""}`}
+                    onMouseDown={(event) => startPointerDrag(event, { kind: "project", projectId: project.id })}
+                    onMouseMove={(event) => handleProjectPointerMove(event, project.id)}
                     onClick={() => selectProjectNode(project.id)}
                   >
                     <span>
@@ -1987,7 +2001,7 @@ function App() {
             {projectCreateKind === "task" && (
               <div className="task-form-grid">
                 <select value={projectTaskFolderId} onChange={(event) => setProjectTaskFolderId(event.target.value)}>
-                  <option value="">保存先フォルダを選択</option>
+                  <option value="">プロジェクト直下（フォルダ未指定）</option>
                   {visibleFolders.map((folder) => (
                     <option key={folder.id} value={folder.id}>
                       {folder.name}
@@ -1998,7 +2012,6 @@ function App() {
                   placeholder="タスク名"
                   value={newTaskName}
                   onChange={(event) => setNewTaskName(event.target.value)}
-                  disabled={!projectTaskFolderId}
                 />
                 <label className="color-input">
                   色
@@ -2006,7 +2019,6 @@ function App() {
                     type="color"
                     value={newTaskColor}
                     onChange={(event) => setNewTaskColor(event.target.value)}
-                    disabled={!projectTaskFolderId}
                   />
                 </label>
                 <textarea
@@ -2014,25 +2026,22 @@ function App() {
                   maxLength={140}
                   value={newTaskOverview}
                   onChange={(event) => setNewTaskOverview(event.target.value)}
-                  disabled={!projectTaskFolderId}
                 />
                 <textarea
                   placeholder="詳細（文字数制限なし）"
                   value={newTaskDetails}
                   onChange={(event) => setNewTaskDetails(event.target.value)}
-                  disabled={!projectTaskFolderId}
                 />
                 <button
                   type="button"
                   className="btn-main"
                   onClick={() => {
-                    void handleCreateTask(projectTaskFolderId);
+                    void handleCreateTask(projectTaskFolderId || undefined);
                   }}
-                  disabled={!projectTaskFolderId}
                 >
                   タスク追加
                 </button>
-                {visibleFolders.length === 0 && <p className="empty-note">先にフォルダを作成してください。</p>}
+                {visibleFolders.length === 0 && <p className="empty-note">フォルダ未作成でも「プロジェクト直下」に追加できます。</p>}
               </div>
             )}
           </div>

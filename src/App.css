@@ -459,7 +459,7 @@ h1 {
   width: min(1360px, 100%);
   margin: 0 auto;
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns:1fr;
   gap: 1rem;
 }
 
@@ -503,7 +503,8 @@ h1 {
 .panel-head-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
+  flex-wrap: wrap;
   gap: 0.75rem;
 }
 
@@ -514,6 +515,7 @@ h1 {
 .panel-head-actions {
   display: inline-flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.65rem;
 }
 
@@ -617,12 +619,18 @@ h1 {
   background: #f4faff;
 }
 
-.tree-node[draggable="true"] {
+.tree-node.is-reorder-enabled {
   cursor: grab;
+  user-select: none;
 }
 
-.tree-node[draggable="true"]:active {
+.tree-node.is-reorder-enabled:active,
+.tree-node.is-dragging {
   cursor: grabbing;
+}
+
+.tree-node.is-dragging {
+  opacity: 0.78;
 }
 
 .tree-node.is-active {
