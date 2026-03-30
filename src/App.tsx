@@ -130,6 +130,8 @@ type TreeDragPayload =
   | { kind: "project"; projectId: string }
   | { kind: "folder"; projectId: string; folderId: string; parentFolderId: string | null };
 
+type ConfirmDialogState = { message: string; onConfirm: () => void };
+
 const mergeOrderedIds = (savedIds: string[], actualIds: string[]) => {
   const actualSet = new Set(actualIds);
   const kept = savedIds.filter((id) => actualSet.has(id));
@@ -333,10 +335,12 @@ function App() {
   const [projectOrderIds, setProjectOrderIds] = useState<string[]>([]);
   const [folderOrderByParent, setFolderOrderByParent] = useState<Record<string, string[]>>({});
   const [pointerDragPayload, setPointerDragPayload] = useState<TreeDragPayload | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [editingWeeklyGoalId, setEditingWeeklyGoalId] = useState<string>("");
   const [editingWeeklyGoalTarget, setEditingWeeklyGoalTarget] = useState(1);
 
   const closeMenu = () => setMenuOpen(false);
+  const showConfirm = (message: string, onConfirm: () => void) => setConfirmDialog({ message, onConfirm });
   const appWindow = getCurrentWindow();
   const calendarPanelRef = useRef<HTMLElement | null>(null);
   const calendarPopoverRef = useRef<HTMLDivElement | null>(null);
@@ -401,6 +405,7 @@ function App() {
   const monthLabel = `${currentMonth.getFullYear()}年 ${currentMonth.getMonth() + 1}月`;
 
   const weekStartYmd = useMemo(() => dateToYmdNumber(getMonday(weeklyBaseDate)), [weeklyBaseDate]);
+  const todayYmd = useMemo(() => dateToYmdNumber(new Date()), []);
   const weekDays = useMemo(() => {
     const start = getMonday(weeklyBaseDate);
     return Array.from({ length: 7 }, (_, i) => {
@@ -1287,14 +1292,12 @@ function App() {
     if (!selectedProjectId) {
       return;
     }
-    const ok = window.confirm("このプロジェクトをアーカイブします。よろしいですか？");
-    if (!ok) {
-      return;
-    }
-    setArchivedProjectIds((prev) => (prev.includes(selectedProjectId) ? prev : [...prev, selectedProjectId]));
-    setSelectedProjectId("");
-    setSelectedFolderId("");
-    setSelectedTaskId("");
+    showConfirm("このプロジェクトをアーカイブします。よろしいですか？", () => {
+      setArchivedProjectIds((prev) => (prev.includes(selectedProjectId) ? prev : [...prev, selectedProjectId]));
+      setSelectedProjectId("");
+      setSelectedFolderId("");
+      setSelectedTaskId("");
+    });
   };
 
   const handleUnarchiveProject = () => {
@@ -1304,39 +1307,35 @@ function App() {
     setArchivedProjectIds((prev) => prev.filter((id) => id !== selectedProjectId));
   };
 
-  const handleDeleteProject = async () => {
+  const handleDeleteProject = () => {
     if (!selectedProjectId) {
       return;
     }
-    const ok = window.confirm("このプロジェクトを削除します。よろしいですか？");
-    if (!ok) {
-      return;
-    }
-    try {
-      const response = await invoke<ApiResponse<Project>>("delete_project", { id: selectedProjectId });
-      if (!response.success) {
-        setErrorMessage(response.message ?? "プロジェクト削除に失敗しました。");
-        return;
+    showConfirm("このプロジェクトを削除します。よろしいですか？", async () => {
+      try {
+        const response = await invoke<ApiResponse<Project>>("delete_project", { id: selectedProjectId });
+        if (!response.success) {
+          setErrorMessage(response.message ?? "プロジェクト削除に失敗しました。");
+          return;
+        }
+        setArchivedProjectIds((prev) => prev.filter((id) => id !== selectedProjectId));
+        clearDetailSelection();
+        await loadProjects();
+      } catch {
+        setErrorMessage("プロジェクト削除に失敗しました。");
       }
-      setArchivedProjectIds((prev) => prev.filter((id) => id !== selectedProjectId));
-      clearDetailSelection();
-      await loadProjects();
-    } catch {
-      setErrorMessage("プロジェクト削除に失敗しました。");
-    }
+    });
   };
 
   const handleArchiveFolder = () => {
     if (!selectedFolderId) {
       return;
     }
-    const ok = window.confirm("このフォルダをアーカイブします。よろしいですか？");
-    if (!ok) {
-      return;
-    }
-    setArchivedFolderIds((prev) => (prev.includes(selectedFolderId) ? prev : [...prev, selectedFolderId]));
-    setSelectedFolderId("");
-    setSelectedTaskId("");
+    showConfirm("このフォルダをアーカイブします。よろしいですか？", () => {
+      setArchivedFolderIds((prev) => (prev.includes(selectedFolderId) ? prev : [...prev, selectedFolderId]));
+      setSelectedFolderId("");
+      setSelectedTaskId("");
+    });
   };
 
   const handleUnarchiveFolder = () => {
@@ -1346,41 +1345,37 @@ function App() {
     setArchivedFolderIds((prev) => prev.filter((id) => id !== selectedFolderId));
   };
 
-  const handleDeleteFolder = async () => {
+  const handleDeleteFolder = () => {
     if (!selectedFolderId) {
       return;
     }
-    const ok = window.confirm("このフォルダを削除します。よろしいですか？");
-    if (!ok) {
-      return;
-    }
-    try {
-      const response = await invoke<ApiResponse<Folder>>("delete_folder", { id: selectedFolderId });
-      if (!response.success) {
-        setErrorMessage(response.message ?? "フォルダ削除に失敗しました。");
-        return;
+    showConfirm("このフォルダを削除します。よろしいですか？", async () => {
+      try {
+        const response = await invoke<ApiResponse<Folder>>("delete_folder", { id: selectedFolderId });
+        if (!response.success) {
+          setErrorMessage(response.message ?? "フォルダ削除に失敗しました。");
+          return;
+        }
+        setArchivedFolderIds((prev) => prev.filter((id) => id !== selectedFolderId));
+        setSelectedFolderId("");
+        setSelectedTaskId("");
+        await loadFolders(selectedProjectId);
+        await loadProjectTasks(selectedProjectId);
+      } catch {
+        setErrorMessage("フォルダ削除に失敗しました。");
       }
-      setArchivedFolderIds((prev) => prev.filter((id) => id !== selectedFolderId));
-      setSelectedFolderId("");
-      setSelectedTaskId("");
-      await loadFolders(selectedProjectId);
-      await loadProjectTasks(selectedProjectId);
-    } catch {
-      setErrorMessage("フォルダ削除に失敗しました。");
-    }
+    });
   };
 
   const handleArchiveTask = () => {
     if (!selectedTaskId) {
       return;
     }
-    const ok = window.confirm("このタスクをアーカイブします。よろしいですか？");
-    if (!ok) {
-      return;
-    }
-    setArchivedTaskIds((prev) => (prev.includes(selectedTaskId) ? prev : [...prev, selectedTaskId]));
-    setSelectedTaskId("");
-    setIsEditingTask(false);
+    showConfirm("このタスクをアーカイブします。よろしいですか？", () => {
+      setArchivedTaskIds((prev) => (prev.includes(selectedTaskId) ? prev : [...prev, selectedTaskId]));
+      setSelectedTaskId("");
+      setIsEditingTask(false);
+    });
   };
 
   const handleUnarchiveTask = () => {
@@ -1390,30 +1385,28 @@ function App() {
     setArchivedTaskIds((prev) => prev.filter((id) => id !== selectedTaskId));
   };
 
-  const handleDeleteTask = async () => {
+  const handleDeleteTask = () => {
     if (!selectedTaskId) {
       return;
     }
-    const ok = window.confirm("このタスクを削除します。よろしいですか？");
-    if (!ok) {
-      return;
-    }
-    try {
-      const response = await invoke<ApiResponse<Task>>("delete_task", { id: selectedTaskId });
-      if (!response.success) {
-        setErrorMessage(response.message ?? "タスク削除に失敗しました。");
-        return;
+    showConfirm("このタスクを削除します。よろしいですか？", async () => {
+      try {
+        const response = await invoke<ApiResponse<Task>>("delete_task", { id: selectedTaskId });
+        if (!response.success) {
+          setErrorMessage(response.message ?? "タスク削除に失敗しました。");
+          return;
+        }
+        setArchivedTaskIds((prev) => prev.filter((id) => id !== selectedTaskId));
+        setSelectedTaskId("");
+        setIsEditingTask(false);
+        if (selectedFolderId) {
+          await loadTasksByFolder(selectedFolderId);
+        }
+        await loadProjectTasks(selectedProjectId);
+      } catch {
+        setErrorMessage("タスク削除に失敗しました。");
       }
-      setArchivedTaskIds((prev) => prev.filter((id) => id !== selectedTaskId));
-      setSelectedTaskId("");
-      setIsEditingTask(false);
-      if (selectedFolderId) {
-        await loadTasksByFolder(selectedFolderId);
-      }
-      await loadProjectTasks(selectedProjectId);
-    } catch {
-      setErrorMessage("タスク削除に失敗しました。");
-    }
+    });
   };
 
   const handleCreateCalendarEvent = async () => {
@@ -1518,24 +1511,22 @@ function App() {
     }
   };
 
-  const handleDeleteWeeklyGoal = async (goalId: string) => {
-    const ok = window.confirm("この週目標を削除します。よろしいですか？");
-    if (!ok) {
-      return;
-    }
-    try {
-      const response = await invoke<ApiResponse<WeeklyGoal>>("delete_weekly_goal", { id: goalId });
-      if (!response.success) {
-        setErrorMessage(response.message ?? "週目標の削除に失敗しました。");
-        return;
+  const handleDeleteWeeklyGoal = (goalId: string) => {
+    showConfirm("この週目標を削除します。よろしいですか？", async () => {
+      try {
+        const response = await invoke<ApiResponse<WeeklyGoal>>("delete_weekly_goal", { id: goalId });
+        if (!response.success) {
+          setErrorMessage(response.message ?? "週目標の削除に失敗しました。");
+          return;
+        }
+        if (editingWeeklyGoalId === goalId) {
+          setEditingWeeklyGoalId("");
+        }
+        await loadWeeklyGoals(weekStartYmd);
+      } catch {
+        setErrorMessage("週目標の削除に失敗しました。");
       }
-      if (editingWeeklyGoalId === goalId) {
-        setEditingWeeklyGoalId("");
-      }
-      await loadWeeklyGoals(weekStartYmd);
-    } catch {
-      setErrorMessage("週目標の削除に失敗しました。");
-    }
+    });
   };
 
   const getCurrentRemainingSeconds = () => {
@@ -2520,7 +2511,7 @@ function App() {
               const ymd = dateToYmdNumber(d);
               const dayActualSeconds = weeklyActualByDate[ymd] ?? 0;
               return (
-                <div key={`head-${ymd}`} className="weekly-day-head-cell">
+                <div key={`head-${ymd}`} className={ymd === todayYmd ? "weekly-day-head-cell is-today" : "weekly-day-head-cell"}>
                   <p className={d.getDay() === 6 ? "weekly-day-title is-sat" : d.getDay() === 0 ? "weekly-day-title is-sun" : "weekly-day-title"}>
                     {d.getMonth() + 1}/{d.getDate()} ({["日", "月", "火", "水", "木", "金", "土"][d.getDay()]})
                   </p>
@@ -2548,7 +2539,7 @@ function App() {
               const daySessions = (weeklySessionsByDate[ymd] ?? []).sort((a, b) => a.start_time - b.start_time);
 
               return (
-                <div key={ymd} className="weekly-day-column">
+                <div key={ymd} className={ymd === todayYmd ? "weekly-day-column is-today" : "weekly-day-column"}>
                   <div className="weekly-day-timeline-grid">
                     {Array.from({ length: 16 }, (_, index) => (
                       <div key={`${ymd}-line-${index}`} className="weekly-hour-line" />
@@ -2835,6 +2826,33 @@ function App() {
           </section>
         )}
       </div>
+
+      {confirmDialog && (
+        <div className="confirm-overlay" onClick={() => setConfirmDialog(null)}>
+          <div className="confirm-dialog" onClick={(e) => e.stopPropagation()}>
+            <p className="confirm-message">{confirmDialog.message}</p>
+            <div className="confirm-actions">
+              <button
+                type="button"
+                className="confirm-btn-cancel"
+                onClick={() => setConfirmDialog(null)}
+              >
+                キャンセル
+              </button>
+              <button
+                type="button"
+                className="confirm-btn-ok"
+                onClick={() => {
+                  confirmDialog.onConfirm();
+                  setConfirmDialog(null);
+                }}
+              >
+                OK
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

@@ -1492,6 +1492,92 @@ h1 {
   transform: translate(-50%, -50%);
   margin: 0;
   color: #82a2bf;
+}
+
+/* ── 今日ハイライト ── */
+.weekly-day-head-cell.is-today {
+  background: linear-gradient(180deg, #eaf4ff 0%, #daeeff 100%);
+  border-color: #7bbff0;
+}
+
+.weekly-day-head-cell.is-today .weekly-day-title {
+  color: #0a4a82;
+  font-weight: 800;
+}
+
+.weekly-day-column.is-today {
+  background: linear-gradient(180deg, #f3f9ff 0%, #eaf4ff 100%);
+  border-color: #90c4f4;
+}
+
+/* ── 確認ダイアログ ── */
+.confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9000;
+  background: rgba(10, 30, 60, 0.38);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.confirm-dialog {
+  background: #ffffff;
+  border: 1px solid #c5ddf5;
+  border-radius: 14px;
+  box-shadow: 0 8px 32px rgba(20, 60, 120, 0.18);
+  padding: 1.6rem 1.8rem 1.3rem;
+  min-width: 280px;
+  max-width: 380px;
+  display: grid;
+  gap: 1.2rem;
+}
+
+.confirm-message {
+  margin: 0;
+  color: #163d6a;
+  font-size: 0.92rem;
+  font-weight: 600;
+  line-height: 1.55;
+}
+
+.confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.65rem;
+}
+
+.confirm-btn-cancel {
+  padding: 0.42rem 1.05rem;
+  border-radius: 8px;
+  border: 1px solid #b8d4ee;
+  background: #f0f7ff;
+  color: #3a6a9a;
+  font-size: 0.84rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.confirm-btn-cancel:hover {
+  background: #deeeff;
+}
+
+.confirm-btn-ok {
+  padding: 0.42rem 1.15rem;
+  border-radius: 8px;
+  border: none;
+  background: #d64a50;
+  color: #ffffff;
+  font-size: 0.84rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.confirm-btn-ok:hover {
+  background: #bf3a40;
+}
   font-size: 0.76rem;
   text-align: center;
 }
