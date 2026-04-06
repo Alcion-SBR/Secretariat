@@ -73,6 +73,12 @@ type LinkInput = {
   url: string;
 };
 
+type RelatedLink = {
+  display_name: string;
+  url: string;
+  type: "URL" | "FilePath";
+};
+
 type ScheduleDetailSelection =
   | { kind: "event"; source: "calendar" | "weekly"; event: CalendarEvent }
   | { kind: "session"; source: "weekly"; session: TimerSession };
@@ -417,18 +423,41 @@ function App() {
 
   const formatLinks = (raw: string | null | undefined) => {
     if (!raw) {
-      return [] as Array<{ display_name: string; url: string }>;
+      return [] as RelatedLink[];
     }
     try {
-      const parsed = JSON.parse(raw) as Array<{ display_name?: string; url?: string }>;
+      const parsed = JSON.parse(raw) as Array<{ display_name?: string; url?: string; type?: string }>;
       return parsed
         .filter((item) => typeof item.url === "string" && item.url.trim().length > 0)
-        .map((item) => ({
-          display_name: item.display_name?.trim() || "リンク",
-          url: item.url!.trim(),
-        }));
+        .map((item): RelatedLink => {
+          const url = item.url!.trim();
+          const type: "URL" | "FilePath" =
+            item.type === "URL" || item.type === "FilePath"
+              ? item.type
+              : url.startsWith("http")
+                ? "URL"
+                : "FilePath";
+
+          return {
+            display_name: item.display_name?.trim() || "リンク",
+            url,
+            type,
+          };
+        });
     } catch {
       return [];
+    }
+  };
+
+  const handleOpenRelatedLink = async (link: RelatedLink) => {
+    if (link.type === "URL") {
+      return;
+    }
+    try {
+      await invoke("open_path_in_explorer", { path: link.url });
+    } catch (error) {
+      const message = typeof error === "string" ? error : error instanceof Error ? error.message : "不明なエラー";
+      setErrorMessage(`パスをエクスプローラーで開けませんでした: ${message}`);
     }
   };
 
@@ -2167,7 +2196,17 @@ function App() {
                     <ul className="link-list">
                       {formatLinks(selectedTask.related_links).map((link, index) => (
                         <li key={`${selectedTask.id}-link-${index}`}>
-                          <a href={link.url} target="_blank" rel="noreferrer">
+                          <a
+                            href={link.type === "URL" ? link.url : "#"}
+                            target={link.type === "URL" ? "_blank" : undefined}
+                            rel={link.type === "URL" ? "noreferrer" : undefined}
+                            onClick={(event) => {
+                              if (link.type === "FilePath") {
+                                event.preventDefault();
+                                void handleOpenRelatedLink(link);
+                              }
+                            }}
+                          >
                             {link.display_name}
                           </a>
                         </li>

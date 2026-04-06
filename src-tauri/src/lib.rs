@@ -62,6 +62,8 @@ pub fn run() {
             create_calendar_event,
             update_calendar_event,
             delete_calendar_event,
+            // System
+            open_path_in_explorer,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

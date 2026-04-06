@@ -313,3 +313,53 @@
 
 12) 確認ダイアログ統一 + 今日ハイライト
 - リスク/注意点: confirm コールバックが async の場合、二重実行防止や閉じるタイミングに注意。日付判定はタイムゾーン差分を考慮すること。
+
+---
+
+## 15. 関連リンクの URL/パス 開き分け対応（エクスプローラー連携）
+
+### 実装に至った経緯
+- タスク詳細の関連リンクで、URL クリック時までエクスプローラーが開く挙動は望ましくないという要望があった。
+- FilePath のみエクスプローラーを開き、URL は従来通りブラウザで開くように明確に区別する必要があった。
+- 実装後、"パスをエクスプローラーで開けませんでした" が発生したため、Windows パス解析と起動処理の堅牢化も追加で必要になった。
+
+### 実装内容
+- 関連リンクを `URL` と `FilePath` で判別してクリック挙動を分岐。
+- `URL` は `<a target="_blank">` でブラウザ起動を維持。
+- `FilePath` は Tauri コマンド `open_path_in_explorer` を呼び出してエクスプローラー起動。
+- Windows 側で以下の前処理を実装:
+  - クォート除去
+  - `file:///` 形式の吸収
+  - `/` -> `\\` 正規化
+  - パス存在確認
+  - ファイル時は `/select,`、フォルダ時は直接オープン
+- 失敗時はフロントに原因文字列を表示するように変更（デバッグ容易化）。
+
+### どこをどう変えたか
+- 変更ファイル: src/App.tsx
+  - `RelatedLink` 型を追加。
+  - `formatLinks` を `type: "URL" | "FilePath"` を返す実装へ変更。
+  - `handleOpenRelatedLink` を追加し、`FilePath` のみ invoke で開く処理を実装。
+  - 関連リンク描画のクリック処理を分岐 (`URL` は通常遷移、`FilePath` は `preventDefault` してコマンド呼び出し)。
+  - 失敗時エラーメッセージに詳細（例: path not found）を含めるよう変更。
+- 変更ファイル: src-tauri/src/commands/system.rs
+  - 新規コマンド `open_path_in_explorer(path: String)` を追加。
+  - Windows 向けのパス正規化、存在確認、`explorer` 起動ロジックを実装。
+- 変更ファイル: src-tauri/src/commands/mod.rs
+  - `system` モジュールを追加し公開。
+- 変更ファイル: src-tauri/src/lib.rs
+  - invoke handler に `open_path_in_explorer` を登録。
+- 変更ファイル: src/App.css
+  - 既存の CSS 警告原因になっていた不要行を削除（ビルド警告解消のため）。
+
+## 影響範囲（追加整理）
+- タスク詳細の「関連リンク」クリック動作全体。
+- 既存データ（`type` が未保存のリンク）にも後方互換で適用。
+- Tauri 側コマンド呼び出し経路（フロント -> Rust -> Windows explorer）。
+- Windows 環境におけるファイル/フォルダオープン UX。
+
+## リスク/注意点（追加整理）
+- URL 判定は現状 `http` 始まりを基準にしているため、`mailto:` などは `FilePath` 扱いになる可能性がある。
+- パス文字列にタイポや未存在ディレクトリがあると `path not found` になる。
+- 環境によっては explorer 起動ポリシーやセキュリティ設定に影響される可能性がある。
+- 将来的に macOS/Linux 対応する場合は OS 別実装が必要（現実装は Windows 最適化）。
